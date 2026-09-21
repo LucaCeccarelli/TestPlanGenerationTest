@@ -51,13 +51,15 @@ Rules:
   "text" of the requirement whose sentence does carry the modal verb, and quote that sentence, not the elaboration.
 - Copy source_quote exactly as printed in the clause text, including any unusual or non-ASCII characters. Escape any control
   character as a JSON \\u escape (e.g. \\u0001) so the reply stays valid JSON; do not drop or alter the character itself.
+- If none of the candidate sentences states an obligation of the system under test (e.g. bibliography entries, definitions of the
+  words shall/should/may, dates), return an empty list.
 {feedback}
 Reply with JSON only: {{"requirements": [{{"text": ..., "modality": ..., "conditions": [...], "source_quote": ...}}]}}"""
 
 
 def check_requirements(clause: Clause, drafts: list[RequirementDraft]) -> list[str]:
     if not drafts:
-        return ["no requirements returned although candidates exist"]
+        return []
     body = norm(clause.text)
     msgs: list[str] = []
     for n, d in enumerate(drafts, 1):

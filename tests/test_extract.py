@@ -71,8 +71,8 @@ def test_check_requirements_accepts_must_as_shall():
     assert check_requirements(c, ok) == []
 
 
-def test_check_requirements_empty_batch_is_a_failure():
-    assert check_requirements(CLAUSE, []) == ["no requirements returned although candidates exist"]
+def test_check_requirements_empty_batch_is_ok():
+    assert check_requirements(CLAUSE, []) == []
 
 
 def test_prompt_contains_clause_candidates_and_failures():
@@ -103,6 +103,11 @@ def test_extract_clause_gap_after_three_failures(fake_llm):
     assert reqs == []
     assert gap is not None and gap.stage == "extract" and gap.attempts == 3
     assert gap.clause_id == "5.2" and gap.requirement_id is None and "nope" in gap.reason
+
+
+def test_extract_clause_empty_batch_is_not_a_gap(fake_llm):
+    reqs, gap = extract_clause(CLAUSE, fake_llm([{"requirements": []}]))
+    assert reqs == [] and gap is None
 
 
 def test_extract_skips_clauses_without_candidates(fake_llm):
