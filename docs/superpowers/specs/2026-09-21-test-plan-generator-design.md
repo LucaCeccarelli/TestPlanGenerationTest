@@ -7,6 +7,8 @@ Status: draft, awaiting review
 
 A local Python CLI that takes a technical standard (PDF, DOCX, Markdown or HTML, in English) and produces, without human intervention, a machine-readable test plan: one set of test case specifications per requirement plus a requirement-to-test traceability matrix, following the ISO/IEC/IEEE 29119-3 test case specification structure.
 
+Runtime: the CLI talks to any Ollama server (Ollama Cloud during development, a self-hosted server with a ~35B model in production).
+
 Non-goals (YAGNI, revisit only on demand):
 
 - Plan-level sections (scope, schedule, risks, environment, entry/exit criteria). They are not derivable from the standard and would be invented.
@@ -23,13 +25,14 @@ Non-goals (YAGNI, revisit only on demand):
 | D2 | Extraction is annotation-then-conversion: a regex pass marks candidate sentences (shall / shall not / must / should / may / required), then the LLM converts each candidate into an atomic requirement | Two-stage extraction gave +29% correctly extracted specifications over end-to-end [R1]. The regex pass is cheap, deterministic, and bounds what the LLM can invent. |
 | D3 | Every requirement carries a verbatim `source_quote` that must appear in its clause text | Cheapest available grounding check against fabrication [R1]. A quote that is not in the source fails verification. |
 | D4 | Per requirement: 1 nominal + N negative/boundary cases; conditional requirements ("if A or B then C") have their condition combinations enumerated explicitly | Conditional requirements imply a minimal full-coverage test set that can be derived mechanically [R3]. Making conditions explicit lets the verifier check coverage instead of trusting the model. |
-| D5 | LLM output is constrained by JSON Schema via Ollama structured outputs, validated with pydantic | Unverified free-text output yielded 0% requirement coverage in the RAITG baseline purely because it was unparseable [R2]. Schema-forcing removes that failure class at zero cost. |
+| D5 | Every LLM call sends a JSON Schema as Ollama `format`, but the client never trusts it: the reply is stripped of code fences, the first JSON value is extracted, and pydantic validates it; anything else is a failed attempt | Unverified free-text output yielded 0% requirement coverage in the RAITG baseline purely because it was unparseable [R2]. Probing showed that Ollama Cloud does not enforce `format` (replies came back as markdown tables), while a locally served model does. Lenient parse plus validation works on both. |
 | D6 | Verification is rule-based, not LLM-based; failures retry up to 3 times, then are recorded as `gaps` in the output | Rule verification is what produced the 22-point gain in [R2]. A retry budget of 3 gave 89% success in [R4]. Recording gaps keeps the run fully automated while never silently dropping a requirement. |
 | D7 | One LLM call per requirement, prompt contains only that requirement and its parent clause | Level of detail in the requirement text is the main driver of generation success [R4]; long context dilutes it. Small prompts also suit a 14B-class local model. |
 | D8 | Output is one JSON or YAML file: `requirements`, `test_cases`, `traceability`, `gaps` | Requested by the user. Traceability matrix is emitted as data, not prose, so it can be checked and diffed [R5]. |
-| D9 | Ollama with a 14B–30B model on a 16GB+ GPU; model name is a CLI flag with a default | User constraint. Model is a knob because extraction quality is model-dependent [R7]. |
+| D9 | Ollama only, reached through `OLLAMA_HOST` (default `http://localhost:11434`) with an optional `OLLAMA_API_KEY` sent as a Bearer token; default model `gemma4:31b`, overridable with `--model` | Development runs against Ollama Cloud, production against a self-hosted server with a ~35B model, so the client must be host-agnostic. A dense ~30B model was chosen as default because it is the same class as the production target: prompts tuned on a much larger model would not transfer. Model is a knob because extraction quality is model-dependent [R7], [R8]. |
 | D10 | Python, five modules, minimal deps: `pymupdf`, `python-docx`, `ollama`, `pydantic`, `pyyaml` | Stdlib-first. Each dep replaces code that would otherwise be reinvented (PDF text, DOCX text, LLM client, schema validation, YAML). Markdown and HTML are read with stdlib (`html.parser`). |
 | D11 | ISO/IEC/IEEE 29119-3:2021 test case specification fields, not IEEE 829 | IEEE 829-2008 was superseded by 29119-3. The field sets are compatible; 29119-3 is current. |
+| D12 | Secrets and copyrighted fixtures stay out of git: `.env` (holds `OLLAMA_API_KEY`) and the ISO fixture are gitignored; `.env` is read by a 5-line stdlib parser, no `python-dotenv` | ISO texts are not redistributable. Freely redistributable fixtures (the RFC, the OpenID spec) are committed so tests run on a fresh clone. |
 
 Known limitation, stated up front: fully automated generation is contrary to the literature's recommendation that LLM-drafted requirement artifacts receive human revision [R7]. The verify stage and the `gaps` list are the mitigation. Anything in `gaps` is by definition untested.
 
@@ -85,7 +88,8 @@ TestPlan
 Input: file path. Output: `list[Clause]`.
 
 - PDF: `pymupdf` text per page, joined. DOCX: `python-docx` paragraphs. Markdown: raw text. HTML: `html.parser` text.
-- Clause segmentation: regex on line starts matching `^\d+(\.\d+)*\s+\S` (numbered heading). Text between two headings belongs to the first. Documents with no numbered headings fall back to one clause per page (PDF) or per top-level heading (others).
+- Clause segmentation: a line is a heading when it is short (< 90 chars) and starts with a clause number (`\d+(\.\d+)*\.?`) followed by a title. Two normalisations observed on the fixtures: ISO PDFs emit the number and the title on separate lines (a number-only line is joined with the following line); web-spec PDFs use non-breaking spaces after the number. Text between two headings belongs to the first. Documents with no detectable numbered headings fall back to one clause per page (PDF) or per top-level heading (others), with `id = "p<page>"`.
+- RFCs: the PDF rendering of an RFC loses section numbers in text extraction, so RFCs should be supplied as the `.txt` or `.html` published by the RFC Editor. The PDF still works through the page fallback, at the cost of clause-level traceability.
 - Tables are flattened to text rows. Figures are ignored.
 
 ### 4.2 Extract (`extract.py`) — regex + LLM
@@ -119,7 +123,7 @@ Emit: assign ids, build traceability, write JSON (default) or YAML (`--format ya
 
 ### 4.5 LLM client (`llm.py`)
 
-Thin wrapper over `ollama.chat` with `format=<json schema>` and `options={"temperature": 0}`. One function: `complete(prompt: str, schema: type[BaseModel]) -> BaseModel`. Retries on malformed JSON are handled here (parse failure counts as one attempt). This is the only module that touches the network, so tests replace it with a fake.
+Thin wrapper over `ollama.Client(host=OLLAMA_HOST, headers={"Authorization": "Bearer " + OLLAMA_API_KEY})` when a key is set, plain `Client(host=OLLAMA_HOST)` otherwise. Calls `chat` with `format=<json schema>`, `think=False`, `options={"temperature": 0}`. One function: `complete(prompt: str, schema: type[BaseModel]) -> BaseModel`. The reply is cleaned (code fences removed, first `{`/`[` to its matching close) and parsed with `schema.model_validate_json`; a parse or validation failure counts as one attempt. At startup the client lists models once to fail fast on a wrong host, key or model name. This is the only module that touches the network, so tests replace it with a fake.
 
 ## 5. CLI
 
@@ -142,7 +146,8 @@ Progress goes to stderr, one line per clause and per requirement. No logging fra
 
 - Unit tests per stage with small fixtures under `tests/fixtures/`: a 3-clause Markdown standard, the same as DOCX and PDF (generated once, committed), one clause with a conditional requirement, one with a numeric limit.
 - `llm.py` is replaced by a fake that returns canned pydantic objects, so extract/generate/verify tests are deterministic and fast. Verify tests feed hand-written bad outputs and assert the exact failure message.
-- One end-to-end test against the user's sample standard, marked slow, asserting: zero `gaps`, every requirement has one nominal case, every `source_quote` is found in the source text. This is the acceptance test for the fixture.
+- Three real standards under `tests/fixtures/` (an ISO standard, an RFC, an OpenID specification) cover the three document conventions: ISO clause numbering, RFC section numbering, web-spec numbering. Ingest tests assert the clause count and a few known clause ids per fixture. The ISO file is gitignored and its test skips when absent.
+- One end-to-end test per fixture, marked slow, run on a `--clauses` subset so a run stays under a few minutes: zero `gaps`, every requirement has one nominal case, every `source_quote` is found in the source text.
 - No mocks of Ollama's HTTP layer; the boundary is the `complete()` function.
 
 ## 8. Project layout

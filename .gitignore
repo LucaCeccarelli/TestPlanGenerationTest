@@ -1,0 +1,5 @@
+.env
+tests/fixtures/iso_18013_5.pdf
+__pycache__/
+*.egg-info/
+.venv/
