@@ -6,7 +6,12 @@ from tpg.models import Clause, Gap, Requirement, RequirementBatch, RequirementDr
 
 CANDIDATE_RE = re.compile(r"\b(shall|must|should|may|is required to)\b", re.I)
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;:])\s+(?=[A-Z(\"'])")
-MODAL_WORDS = {"shall": "shall", "shall_not": "shall not", "should": "should", "may": "may"}
+MODAL_RE = {
+    "shall": re.compile(r"\b(shall|must)\b(?!\s+not\b)"),
+    "shall_not": re.compile(r"\b(shall|must)\s+not\b"),
+    "should": re.compile(r"\bshould\b(?!\s+not\b)"),
+    "may": re.compile(r"\bmay\b(?!\s+not\b)"),
+}
 
 
 def norm(s: str) -> str:
@@ -61,8 +66,7 @@ def check_requirements(clause: Clause, drafts: list[RequirementDraft]) -> list[s
         q = norm(d.source_quote)
         if not q or q not in body:
             msgs.append(f"requirement {n}: source_quote is not a verbatim substring of the clause: {d.source_quote!r}")
-        elif MODAL_WORDS[d.modality] not in q and not (d.modality == "shall" and "must" in q) \
-                and not (d.modality == "shall_not" and "must not" in q):
+        elif not MODAL_RE[d.modality].search(q):
             msgs.append(f"requirement {n}: modality {d.modality!r} does not appear in source_quote {d.source_quote!r}")
     return msgs
 

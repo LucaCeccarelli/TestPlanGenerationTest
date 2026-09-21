@@ -58,6 +58,19 @@ def test_check_requirements_empty_text():
     assert any("text" in m for m in check_requirements(CLAUSE, [d]))
 
 
+def test_check_requirements_rejects_negated_modal_for_positive_modality():
+    d = RequirementDraft(text="x", modality="shall", source_quote="the device shall not process the request")
+    msgs = check_requirements(CLAUSE, [d])
+    assert len(msgs) == 1 and "modality" in msgs[0]
+
+
+def test_check_requirements_accepts_must_as_shall():
+    c = Clause(id="1", title="t", text="The reader must respond. The reader must not crash.")
+    ok = [RequirementDraft(text="a", modality="shall", source_quote="The reader must respond."),
+          RequirementDraft(text="b", modality="shall_not", source_quote="The reader must not crash.")]
+    assert check_requirements(c, ok) == []
+
+
 def test_check_requirements_empty_batch_is_a_failure():
     assert check_requirements(CLAUSE, []) == ["no requirements returned although candidates exist"]
 
