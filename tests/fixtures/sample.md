@@ -4,6 +4,10 @@
 
 This document specifies the behaviour of the sample device. It contains no requirements.
 
+## 5 Requirements
+
+The following clauses define the requirements for the sample device.
+
 ## 5.1 Response time
 
 The device shall respond to any request within 500 ms. The device may log the request.

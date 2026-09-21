@@ -3,7 +3,7 @@ import re
 import textwrap
 from pathlib import Path
 
-import fitz  # pymupdf
+import pymupdf
 from docx import Document
 
 HERE = Path(__file__).parent
@@ -19,7 +19,7 @@ for line in lines:
 doc.save(HERE / "sample.docx")
 
 # PDF: mimic ISO layout: the clause number on its own line, title on the next.
-pdf = fitz.open()
+pdf = pymupdf.open()
 page = pdf.new_page()
 y = 40
 for line in lines:

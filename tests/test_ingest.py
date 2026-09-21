@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tpg.ingest import ingest, segment
+from tpg.ingest import follows, ingest, segment, strip_repeated, table_rows
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -58,11 +58,11 @@ def test_openid_pdf_has_expected_clauses():
 
 
 def test_duplicate_ids_are_unique_after_segmentation():
-    pages = ["5.1 New Parameters\n5.2 Existing Parameters\n5.1 New Parameters\nThe wallet shall accept them.\n9 Response\nBody A.\n9 Response\nBody B."]
+    pages = ["5.1 New Parameters\n5.2 Existing Parameters\n5 Recap\n5.1 New Parameters\nThe wallet shall accept them.\n9 Response\nBody A.\n9 Response\nBody B."]
     clauses = segment(pages)
     ids = [c.id for c in clauses]
     assert len(ids) == len(set(ids))
-    assert ids == ["5.2", "5.1", "9", "9#2"]
+    assert ids == ["5.2", "5", "5.1", "9", "9#2"]
     assert next(c for c in clauses if c.id == "5.1").text.startswith("The wallet")
 
 
@@ -90,15 +90,15 @@ def test_docx_tables_stay_in_document_order(tmp_path):
     from docx import Document
     doc = Document()
     doc.add_paragraph("5.1 First")
-    t = doc.add_table(rows=1, cols=2)
-    t.rows[0].cells[0].text = "The unit shall log"
-    t.rows[0].cells[1].text = "events"
+    t = doc.add_table(rows=2, cols=2)
+    t.rows[0].cells[0].text, t.rows[0].cells[1].text = "Item", "Value"
+    t.rows[1].cells[0].text, t.rows[1].cells[1].text = "The unit shall log", "events"
     doc.add_paragraph("5.2 Second")
     doc.add_paragraph("Body two.")
     p = tmp_path / "t.docx"
     doc.save(str(p))
     clauses = ingest(str(p))
-    assert "shall log | events" in next(c for c in clauses if c.id == "5.1").text
+    assert "Item: The unit shall log | Value: events" in next(c for c in clauses if c.id == "5.1").text
     assert "shall log" not in next(c for c in clauses if c.id == "5.2").text
 
 
@@ -110,4 +110,96 @@ def test_rfc_pdf_falls_back_to_pages():
 @pytest.mark.skipif(not (FIX / "iso_18013_5.pdf").exists(), reason="ISO fixture not distributed")
 def test_iso_pdf_has_expected_clauses():
     ids = {c.id for c in ingest(str(FIX / "iso_18013_5.pdf"))}
-    assert {"1", "6.1", "8.1", "8.1.1"} <= ids
+    assert {"1", "7.1", "8.1", "8.1.1"} <= ids
+
+
+def test_strip_repeated_removes_running_headers_and_page_numbers():
+    pages = [f"Spec v1.0\nBody {i}\nmore text {i}\nPage {i} of 4" for i in range(1, 5)]
+    out = strip_repeated(pages)
+    assert out[0] == "Body 1\nmore text 1"
+    assert all("Spec v1.0" not in p and "Page" not in p for p in out)
+
+
+def test_strip_repeated_keeps_short_documents_and_mid_page_lines():
+    pages = ["Spec v1.0\nBody\nSpec v1.0 again mid", "Spec v1.0\nOther"]
+    assert strip_repeated(pages) == pages
+    four = ["Spec\n" + "\n".join(f"line {j}" for j in range(10)) + "\nTable 3 caption\nend"] * 4
+    assert all("Table 3 caption" in p for p in strip_repeated(four))
+
+
+def test_table_rows_format_and_merged_first_cell():
+    rows = [["Name", "Presence", "Type"], ["nonce", "M", "text"], ["", "O", "int"], ["", "", ""]]
+    assert table_rows(rows) == "Name: nonce | Presence: M | Type: text\nName: nonce | Presence: O | Type: int"
+
+
+def test_follows_sequence_rules():
+    assert follows(None, "1") and follows("1", "2") and follows("1", "1.1") and follows("1.1", "1.2")
+    assert follows("7.4.9", "7.5") and follows("7.4.9", "8") and follows("1.1", "1.3")  # one missed heading tolerated
+    assert follows("8", "8.1") and not follows("8", "8.1.2") and not follows("1.1", "1.5")
+    assert follows("B.2", "B.3") and follows("B", "B.1") and follows("A.3.4", "B") and not follows("B.2", "5.2")
+
+
+def test_letter_prefixed_and_annex_headings():
+    clauses = segment(["1 Scope\nBody.\nAnnex A Use cases\nIntro.\nA.1 General\nThe unit shall log.\nA.2 Cases\nMore."])
+    assert [c.id for c in clauses] == ["1", "A", "A.1", "A.2"]
+    assert clauses[1].title == "Use cases"
+
+
+def test_table_cell_number_is_not_a_heading():
+    clauses = segment(["B.1 Extensions\nAuthority Key Identifier\n5.2 Further extensions shall not be present\nCRL Number\nB.2 Next\nBody."])
+    assert [c.id for c in clauses] == ["B.1", "B.2"]
+    assert "5.2 Further extensions" in clauses[0].text
+
+
+def test_joined_heading_accepts_lowercase_title_but_inline_lowercase_is_rejected():
+    clauses = segment(["7.3.2\t\nnameSpace\nThe nameSpace shall be text.\n7.3.3 mDL data\nBody."])
+    assert [(c.id, c.title) for c in clauses] == [("7.3.2", "nameSpace")]
+    assert "7.3.3 mDL data" in clauses[0].text
+
+
+def test_soft_hyphens_are_removed():
+    clauses = segment(["5.1 Codes\nThe first part of the code shall be the same as issu\u00ading_country."])
+    assert "issuing_country" in clauses[0].text
+
+
+def test_markdown_pipe_table_becomes_row_records(tmp_path):
+    md = tmp_path / "t.md"
+    md.write_text("## 5.4 Parameters\n\n| Name | Presence | Type |\n|---|---|---|\n| nonce | mandatory | text string |\n| locale | optional | language tag |\n")
+    c = ingest(str(md))[0]
+    assert "Name: nonce | Presence: mandatory | Type: text string" in c.text
+    assert "Name: locale | Presence: optional | Type: language tag" in c.text
+    assert "|---" not in c.text
+
+
+def test_html_table_becomes_row_records(tmp_path):
+    h = tmp_path / "t.html"
+    h.write_text("<h2>5.4 Parameters</h2><table><tr><th>Name</th><th>Presence</th></tr><tr><td>nonce</td><td>mandatory</td></tr></table>")
+    c = ingest(str(h))[0]
+    assert "Name: nonce | Presence: mandatory" in c.text
+
+
+def test_docx_table_becomes_row_records_with_headers(tmp_path):
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph("5.4 Parameters")
+    t = doc.add_table(rows=2, cols=2)
+    t.rows[0].cells[0].text, t.rows[0].cells[1].text = "Name", "Presence"
+    t.rows[1].cells[0].text, t.rows[1].cells[1].text = "nonce", "mandatory"
+    p = tmp_path / "t.docx"
+    doc.save(str(p))
+    c = next(c for c in ingest(str(p)) if c.id == "5.4")
+    assert "Name: nonce | Presence: mandatory" in c.text
+
+
+def test_iso_pdf_finds_lowercase_titled_and_annex_clauses():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    clauses = {c.id: c for c in ingest(str(FIX / "iso_18013_5.pdf"))}
+    assert {"3.1", "A.1", "8.2.1.1.2.1"} <= set(clauses)
+    assert max(len(c.text) for c in clauses.values()) < 60000
+    assert "Reference:" in "".join(c.text for c in clauses.values())   # a table row record survived
+
+
+def test_pdf_pages_have_no_running_headers():
+    text = "\n".join(ingest(str(FIX / "OpenID4VP1-0.pdf"))[3].text.splitlines()[:50])
+    assert "openid.net/specs" not in text and " of 96" not in text
