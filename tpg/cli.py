@@ -1,6 +1,5 @@
 """tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2]"""
 import argparse
-import os
 import sys
 
 from tpg.emit import write_plan
@@ -26,10 +25,14 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--attempts", type=int, default=3)
     args = parser.parse_args(argv)
 
-    load_dotenv()
-    if not os.path.isfile(args.standard):
-        _err(f"cannot read {args.standard}")
+    try:
+        with open(args.standard, "rb") as f:
+            f.read(1)
+    except OSError as e:
+        _err(f"cannot read {args.standard}: {e.strerror or e}")
         return 1
+
+    load_dotenv()
     llm = OllamaLLM(model=args.model)
     try:
         llm.check()
@@ -43,7 +46,11 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as e:
         _err(str(e))
         return 1
-    write_plan(plan, args.out, args.format)
+    try:
+        write_plan(plan, args.out, args.format)
+    except OSError as e:
+        _err(f"cannot write {args.out}: {e.strerror or e}")
+        return 1
     _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps")
     return 2 if plan.gaps else 0
 

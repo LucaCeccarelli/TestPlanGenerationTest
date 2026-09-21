@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -74,3 +75,33 @@ def test_clauses_flag_is_split_and_passed(tmp_path, monkeypatch):
 
 def test_default_model():
     assert cli.DEFAULT_MODEL == "gemma4:31b"
+
+
+def test_exit_1_when_input_unreadable(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    class Counting(StubLLM):
+        def check(self):
+            calls.append(1)
+
+    locked = tmp_path / "locked.md"
+    locked.write_text("x")
+    locked.chmod(0)
+    if os.access(locked, os.R_OK):
+        pytest.skip("running as root; cannot make a file unreadable")
+    monkeypatch.setattr(cli, "OllamaLLM", Counting)
+    try:
+        assert cli.main(["generate", str(locked), "--out", str(tmp_path / "p.json")]) == 1
+    finally:
+        locked.chmod(0o600)
+    assert "locked.md" in capsys.readouterr().err
+    assert calls == []
+
+
+def test_exit_1_when_output_unwritable(tmp_path, monkeypatch, capsys):
+    plan = TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    monkeypatch.setattr(cli, "run", _stub_run(plan))
+    out = tmp_path / "no_such_dir" / "p.json"
+    assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(out)]) == 1
+    assert "cannot write" in capsys.readouterr().err
