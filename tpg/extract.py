@@ -49,8 +49,7 @@ Rules:
   (shall/must, shall not/must not, should, may) must literally appear inside source_quote. If a bullet elaborates or restates a
   preceding obligation without a modal verb of its own, that elaboration is not a separate requirement: fold its detail into the
   "text" of the requirement whose sentence does carry the modal verb, and quote that sentence, not the elaboration.
-- Copy source_quote exactly as printed in the clause text, including any unusual or non-ASCII characters. Escape any control
-  character as a JSON \\u escape (e.g. \\u0001) so the reply stays valid JSON; do not drop or alter the character itself.
+- Copy source_quote exactly as printed in the clause text, including any unusual or non-ASCII characters.
 - If none of the candidate sentences states an obligation of the system under test (e.g. bibliography entries, definitions of the
   words shall/should/may, dates), return an empty list.
 {feedback}

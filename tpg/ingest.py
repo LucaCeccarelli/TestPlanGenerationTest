@@ -9,6 +9,9 @@ HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t\xa0]+([A-Z].*)$")
 NUMBER_ONLY_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)*)\.?[ \t\xa0]*$")
 MAX_HEADING_LEN = 90
 
+# ponytail: private-use glyph order is font-specific; extend the table if another PDF shows other control chars
+LIGATURES = str.maketrans({"\x01": "fi", "\x02": "fl", "\x03": "ff", "\x04": "fl", "\x05": "ffi"})
+
 
 class _Text(HTMLParser):
     BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "br", "table", "section"}
@@ -54,7 +57,7 @@ def read_pages(path: str) -> list[str]:
     if suffix == ".pdf":
         import fitz
         with fitz.open(path) as doc:
-            return [page.get_text() for page in doc]
+            return [page.get_text().translate(LIGATURES) for page in doc]
     if suffix == ".docx":
         from docx import Document
         from docx.table import Table

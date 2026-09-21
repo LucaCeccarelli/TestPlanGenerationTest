@@ -80,6 +80,12 @@ def test_unnumbered_markdown_falls_back_to_one_clause_per_heading(tmp_path):
     assert "shall work" in clauses[1].text
 
 
+def test_openid_pdf_text_has_no_control_characters():
+    text = "\n".join(c.title + "\n" + c.text for c in ingest(str(FIX / "OpenID4VP1-0.pdf")))
+    assert not any(ord(ch) < 32 and ch not in "\n\t\r" for ch in text)
+    assert "Verifier" in text
+
+
 def test_docx_tables_stay_in_document_order(tmp_path):
     from docx import Document
     doc = Document()
