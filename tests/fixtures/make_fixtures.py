@@ -25,7 +25,7 @@ y = 40
 for line in lines:
     if line.startswith("#"):
         m = re.match(r"#+\s+(\d+(?:\.\d+)*)\s+(.*)", line)
-        if m:
+        if m and "." in m.group(1):          # ISO layout: dotted number alone, title on the next line
             page.insert_text((40, y), m.group(1)); y += 14
             page.insert_text((40, y), m.group(2)); y += 14
             continue

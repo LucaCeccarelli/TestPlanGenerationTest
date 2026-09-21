@@ -5,8 +5,8 @@ from pathlib import Path
 
 from tpg.models import Clause
 
-HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t ]+([A-Za-z].*)$")
-NUMBER_ONLY_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t ]*$")
+HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t ]+([A-Z].*)$")
+NUMBER_ONLY_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)*)\.?[ \t ]*$")
 MAX_HEADING_LEN = 90
 
 
