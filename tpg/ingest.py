@@ -12,6 +12,7 @@ MAX_HEADING_LEN = 90
 
 class _Text(HTMLParser):
     BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr", "br", "table", "section"}
+    HEADING = {"h1", "h2"}
 
     def __init__(self):
         super().__init__()
@@ -21,6 +22,8 @@ class _Text(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
             self._skip += 1
+        if tag in self.HEADING:
+            self.parts.append("\f")
         if tag in self.BLOCK:
             self.parts.append("\n")
 
@@ -35,6 +38,16 @@ class _Text(HTMLParser):
             self.parts.append(data)
 
 
+def _pages(text: str) -> list[str]:
+    """Readers mark a top-level heading with a form feed; split into one page per heading
+    (a single page if none was found), dropping empty leading chunks from a doc that opens
+    with a heading."""
+    parts = text.split("\f")
+    while parts and not parts[0]:
+        parts.pop(0)
+    return parts
+
+
 def read_pages(path: str) -> list[str]:
     p = Path(path)
     suffix = p.suffix.lower()
@@ -44,19 +57,33 @@ def read_pages(path: str) -> list[str]:
             return [page.get_text() for page in doc]
     if suffix == ".docx":
         from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(path)
-        lines = [para.text for para in doc.paragraphs]
-        for table in doc.tables:
-            for row in table.rows:
-                lines.append(" | ".join(cell.text for cell in row.cells))
-        return ["\n".join(lines)]
+        lines: list[str] = []
+        for child in doc.element.body.iterchildren():
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "p":
+                para = Paragraph(child, doc)
+                if para.style.name.startswith(("Heading 1", "Heading 2")):
+                    lines.append("\f")
+                lines.append(para.text)
+            elif tag == "tbl":
+                for row in Table(child, doc).rows:
+                    lines.append(" | ".join(cell.text for cell in row.cells))
+        return _pages("\n".join(lines))
     if suffix in (".html", ".htm"):
         parser = _Text()
         parser.feed(p.read_text(errors="replace"))
-        return ["".join(parser.parts)]
+        return _pages("".join(parser.parts))
     # Markdown, .txt, anything else: plain text. Strip leading '#' so headings match.
     text = p.read_text(errors="replace")
-    return ["\n".join(re.sub(r"^#+\s*", "", line) for line in text.splitlines())]
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("# ") or line.startswith("## "):
+            lines.append("\f")
+        lines.append(re.sub(r"^#+\s*", "", line))
+    return _pages("\n".join(lines))
 
 
 def _heading(line: str) -> tuple[str, str] | None:

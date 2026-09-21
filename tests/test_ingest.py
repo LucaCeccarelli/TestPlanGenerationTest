@@ -72,6 +72,30 @@ def test_openid_pdf_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
+def test_unnumbered_markdown_falls_back_to_one_clause_per_heading(tmp_path):
+    md = tmp_path / "u.md"
+    md.write_text("# Intro\nText one.\n## Rules\nThe unit shall work.\n## Notes\nMore.\n")
+    clauses = ingest(str(md))
+    assert [c.id for c in clauses] == ["p1", "p2", "p3"]
+    assert "shall work" in clauses[1].text
+
+
+def test_docx_tables_stay_in_document_order(tmp_path):
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph("5.1 First")
+    t = doc.add_table(rows=1, cols=2)
+    t.rows[0].cells[0].text = "The unit shall log"
+    t.rows[0].cells[1].text = "events"
+    doc.add_paragraph("5.2 Second")
+    doc.add_paragraph("Body two.")
+    p = tmp_path / "t.docx"
+    doc.save(str(p))
+    clauses = ingest(str(p))
+    assert "shall log | events" in next(c for c in clauses if c.id == "5.1").text
+    assert "shall log" not in next(c for c in clauses if c.id == "5.2").text
+
+
 def test_rfc_pdf_falls_back_to_pages():
     clauses = ingest(str(FIX / "RFC8949.pdf"))
     assert clauses[0].id == "p1" and len(clauses) > 50
