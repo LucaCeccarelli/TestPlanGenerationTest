@@ -1,0 +1,29 @@
+[project]
+name = "tpg"
+version = "0.1.0"
+description = "Generate ISO 29119-3 test cases from technical standards with a local LLM"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2",
+  "ollama>=0.4",
+  "pymupdf",
+  "python-docx",
+  "pyyaml",
+]
+
+[project.scripts]
+tpg = "tpg.cli:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tpg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: needs a reachable Ollama server (set TPG_E2E=1)"]
