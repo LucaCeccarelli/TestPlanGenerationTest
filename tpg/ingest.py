@@ -99,8 +99,37 @@ def segment(pages: list[str]) -> list[Clause]:
             elif current is not None and line:
                 current.text = (current.text + "\n" + line).strip()
     if clauses:
-        return clauses
+        return _dedupe_ids(clauses)
     return [Clause(id=f"p{n}", title="", text=page.strip()) for n, page in enumerate(pages, 1)]
+
+
+def _dedupe_ids(clauses: list[Clause]) -> list[Clause]:
+    """Table-of-contents stubs and running headers can repeat an id. Group by id in
+    appearance order; drop empty-text duplicates when a non-empty one exists; suffix
+    remaining non-empty duplicates "<id>#2", "<id>#3", ...; keep only the first if all
+    are empty. Document order of survivors is preserved."""
+    groups: dict[str, list[Clause]] = {}
+    for c in clauses:
+        groups.setdefault(c.id, []).append(c)
+    keep: set[int] = set()
+    suffix: dict[int, str] = {}
+    for cid, group in groups.items():
+        nonempty = [c for c in group if c.text]
+        if nonempty:
+            survivors = nonempty
+        else:
+            survivors = [group[0]]
+        keep.update(id(c) for c in survivors)
+        for n, c in enumerate(survivors[1:], 2):
+            suffix[id(c)] = f"{cid}#{n}"
+    out = []
+    for c in clauses:
+        if id(c) not in keep:
+            continue
+        if id(c) in suffix:
+            c.id = suffix[id(c)]
+        out.append(c)
+    return out
 
 
 def ingest(path: str) -> list[Clause]:

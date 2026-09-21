@@ -57,6 +57,21 @@ def test_openid_pdf_has_expected_clauses():
     assert {"5", "5.1", "5.2"} <= ids
 
 
+def test_duplicate_ids_are_unique_after_segmentation():
+    pages = ["5.1 New Parameters\n5.2 Existing Parameters\n5.1 New Parameters\nThe wallet shall accept them.\n9 Response\nBody A.\n9 Response\nBody B."]
+    clauses = segment(pages)
+    ids = [c.id for c in clauses]
+    assert len(ids) == len(set(ids))
+    assert ids == ["5.2", "5.1", "9", "9#2"]
+    assert next(c for c in clauses if c.id == "5.1").text.startswith("The wallet")
+
+
+def test_openid_pdf_ids_are_unique():
+    clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
+    ids = [c.id for c in clauses]
+    assert len(ids) == len(set(ids))
+
+
 def test_rfc_pdf_falls_back_to_pages():
     clauses = ingest(str(FIX / "RFC8949.pdf"))
     assert clauses[0].id == "p1" and len(clauses) > 50
