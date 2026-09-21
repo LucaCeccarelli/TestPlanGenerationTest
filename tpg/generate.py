@@ -19,8 +19,12 @@ FIELDS = """Test case fields (ISO/IEC/IEEE 29119-3 test case specification):
 def build_generate_prompt(req: Requirement, clause: Clause, failures: list[str]) -> str:
     required = required_assignments(req.conditions)
     if required:
-        assign = ("This requirement is conditional. Produce exactly these condition_assignment values, one case each "
-                  "(the all-true one is the nominal case, the others are negative cases):\n"
+        assign = ("This requirement is conditional. Produce exactly one test case for each condition_assignment value listed "
+                  "below, and no others: this list is the complete set, do not add a case for any other combination, such as "
+                  "every condition false, unless it is listed here. Assign kind by position in this list, not by whether the "
+                  "requirement's wording sounds like an error, rejection, or failure: the FIRST value below (all conditions "
+                  "true) is the main path being exercised and its case is kind=\"nominal\" even when the requirement text "
+                  "describes returning an error or refusing a request; every other value below is kind=\"negative\":\n"
                   + "\n".join(f"- {json.dumps(a)}" for a in required))
     else:
         assign = "This requirement is unconditional: set condition_assignment to null in every case."
@@ -43,6 +47,8 @@ Rules:
 - Produce exactly one nominal case.
 - Produce at least one negative case when the modality is shall or shall_not.
 - Produce one boundary case when the requirement mentions a numeric limit, range, size, or time.
+- preconditions, inputs, and steps are each a list of plain strings, one item per string. Never put an object, number, or null
+  in those lists; write everything, including data values, as text.
 - {assign}
 {feedback}
 Reply with JSON only: {{"test_cases": [{{"kind": ..., "objective": ..., "preconditions": [...], "inputs": [...], "steps": [...], "expected_result": ..., "pass_criteria": ..., "condition_assignment": ...}}]}}"""

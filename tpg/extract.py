@@ -39,7 +39,13 @@ Rules:
 - "text": one self-contained testable statement, keep the modal verb.
 - "modality": one of shall, shall_not, should, may. Use "must" as shall and "must not" as shall_not.
 - "conditions": the list of conditions under which the obligation applies (e.g. ["request is malformed", "session has expired"] for "if A or B then ..."); empty list if unconditional.
-- "source_quote": a VERBATIM substring of the clause text that contains the modal verb. Copy it exactly.
+- "source_quote": a VERBATIM substring of the clause text that contains THIS requirement's own modal verb, not one belonging to a
+  different obligation nearby. Keep it as short as possible while still containing that modal verb: the word matching "modality"
+  (shall/must, shall not/must not, should, may) must literally appear inside source_quote. If a bullet elaborates or restates a
+  preceding obligation without a modal verb of its own, that elaboration is not a separate requirement: fold its detail into the
+  "text" of the requirement whose sentence does carry the modal verb, and quote that sentence, not the elaboration.
+- Copy source_quote exactly as printed in the clause text, including any unusual or non-ASCII characters. Escape any control
+  character as a JSON \\u escape (e.g. \\u0001) so the reply stays valid JSON; do not drop or alter the character itself.
 {feedback}
 Reply with JSON only: {{"requirements": [{{"text": ..., "modality": ..., "conditions": [...], "source_quote": ...}}]}}"""
 

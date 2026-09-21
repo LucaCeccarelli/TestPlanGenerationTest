@@ -1,0 +1,64 @@
+"""Slow tests: real model, real documents. Run with: TPG_E2E=1 OLLAMA_HOST=https://ollama.com uv run pytest -m slow -v"""
+import os
+from pathlib import Path
+
+import pytest
+
+from tpg.extract import norm
+from tpg.ingest import ingest
+from tpg.llm import OllamaLLM, load_dotenv
+from tpg.pipeline import run
+
+FIX = Path(__file__).parent / "fixtures"
+MODEL = os.environ.get("TPG_MODEL", "gemma4:31b")
+
+pytestmark = pytest.mark.slow
+if not os.environ.get("TPG_E2E"):
+    pytest.skip("set TPG_E2E=1 to run against a real Ollama server", allow_module_level=True)
+
+
+@pytest.fixture(scope="module")
+def llm():
+    load_dotenv()
+    client = OllamaLLM(model=MODEL)
+    client.check()
+    return client
+
+
+def _assert_plan_is_sound(plan, path):
+    clauses = {c.id: c for c in ingest(str(path))}
+    assert plan.gaps == [], [g.model_dump() for g in plan.gaps]
+    assert plan.requirements, "no requirements extracted"
+    for r in plan.requirements:
+        assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
+        link = next(t for t in plan.traceability if t.requirement_id == r.id)
+        kinds = [c.kind for c in plan.test_cases if c.id in link.test_case_ids]
+        assert kinds.count("nominal") == 1, r.id
+
+
+def test_sample_markdown(llm):
+    plan = run(str(FIX / "sample.md"), llm, MODEL, log=print)
+    _assert_plan_is_sound(plan, FIX / "sample.md")
+    assert {r.clause_id for r in plan.requirements} == {"5.1", "5.2"}
+    cond = [r for r in plan.requirements if r.clause_id == "5.2" and r.modality == "shall_not"]
+    assert cond and len(cond[0].conditions) == 2
+
+
+def test_openid_clause_5_1(llm):
+    plan = run(str(FIX / "OpenID4VP1-0.pdf"), llm, MODEL, clause_ids=["5.1"], log=print)
+    _assert_plan_is_sound(plan, FIX / "OpenID4VP1-0.pdf")
+
+
+def test_rfc_one_page(llm):
+    # p12 has zero modal-sentence candidates; p3 is the first page with 3+ (see tpg.extract.find_candidates).
+    plan = run(str(FIX / "RFC8949.pdf"), llm, MODEL, clause_ids=["p3"], log=print)
+    _assert_plan_is_sound(plan, FIX / "RFC8949.pdf")
+
+
+@pytest.mark.skipif(not (FIX / "iso_18013_5.pdf").exists(), reason="ISO fixture not distributed")
+def test_iso_clause_7_3_2(llm):
+    # 6.1 ("Introduction") has zero modal-sentence candidates in this fixture, same as RFC p12;
+    # "2" (Normative references) has regex-matching candidates but they are bibliography titles, not
+    # real obligations. 7.3.2 (DocType) is the first substantive clause with 3+ genuine candidates.
+    plan = run(str(FIX / "iso_18013_5.pdf"), llm, MODEL, clause_ids=["7.3.2"], log=print)
+    _assert_plan_is_sound(plan, FIX / "iso_18013_5.pdf")
