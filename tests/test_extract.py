@@ -105,6 +105,14 @@ def test_extract_clause_gap_after_three_failures(fake_llm):
     assert gap.clause_id == "5.2" and gap.requirement_id is None and "nope" in gap.reason
 
 
+def test_extract_clause_ids_follow_source_order(fake_llm):
+    reversed_good = {"requirements": list(reversed(GOOD["requirements"]))}
+    reqs, gap = extract_clause(CLAUSE, fake_llm([reversed_good]))
+    assert gap is None
+    assert [r.modality for r in reqs] == ["shall_not", "may"]
+    assert [r.id for r in reqs] == ["REQ-5.2-1", "REQ-5.2-2"]
+
+
 def test_extract_clause_empty_batch_is_not_a_gap(fake_llm):
     reqs, gap = extract_clause(CLAUSE, fake_llm([{"requirements": []}]))
     assert reqs == [] and gap is None

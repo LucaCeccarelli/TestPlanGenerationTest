@@ -84,8 +84,10 @@ def extract_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[Require
             continue
         failures = check_requirements(clause, batch.requirements)
         if not failures:
+            body = norm(clause.text)
+            ordered = sorted(batch.requirements, key=lambda d: body.index(norm(d.source_quote)))
             reqs = [Requirement(id=f"REQ-{clause.id}-{n}", clause_id=clause.id, **d.model_dump())
-                    for n, d in enumerate(batch.requirements, 1)]
+                    for n, d in enumerate(ordered, 1)]
             return reqs, None
     return [], Gap(requirement_id=None, clause_id=clause.id, stage="extract",
                    reason="; ".join(failures), attempts=attempts)
