@@ -36,7 +36,8 @@ def test_write_plan_json_and_yaml(tmp_path):
 
 
 def test_write_plan_is_utf8(tmp_path):
-    plan = build_plan(SRC, [R1.model_copy(update={"text": "réponse ≤ 500 ms"})], [], [])
+    text = "r\u00e9ponse \u2264 500 ms"
+    plan = build_plan(SRC, [R1.model_copy(update={"text": text})], [], [])
     write_plan(plan, str(tmp_path / "p.json"), "json")
     raw = (tmp_path / "p.json").read_bytes()
-    assert "réponse ≤ 500 ms".encode("utf-8") in raw
+    assert text.encode("utf-8") in raw

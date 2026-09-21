@@ -98,6 +98,12 @@ def test_exit_1_when_input_unreadable(tmp_path, monkeypatch, capsys):
     assert calls == []
 
 
+def test_exit_1_when_attempts_below_one(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--attempts", "0"]) == 1
+    assert "attempts" in capsys.readouterr().err
+
+
 def test_exit_1_when_output_unwritable(tmp_path, monkeypatch, capsys):
     plan = TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
     monkeypatch.setattr(cli, "OllamaLLM", StubLLM)

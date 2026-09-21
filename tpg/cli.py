@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--attempts", type=int, default=3)
     args = parser.parse_args(argv)
 
+    if args.attempts < 1:
+        _err("--attempts must be at least 1")
+        return 1
+
     try:
         with open(args.standard, "rb") as f:
             f.read(1)

@@ -5,7 +5,7 @@ description = "Generate ISO 29119-3 test cases from technical standards with a l
 requires-python = ">=3.12"
 dependencies = [
   "pydantic>=2",
-  "ollama>=0.4",
+  "ollama>=0.5.1",
   "pymupdf",
   "python-docx",
   "pyyaml",

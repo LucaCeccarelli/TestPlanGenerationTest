@@ -96,8 +96,6 @@ def _heading(line: str) -> tuple[str, str] | None:
     if not m:
         return None
     number, title = m.group(1), m.group(2).strip()
-    if title.lower().startswith("of "):  # "3 of 77" page footers
-        return None
     return number, title
 
 
