@@ -31,7 +31,7 @@ def test_iso_style_number_on_own_line_is_joined():
 
 
 def test_nbsp_after_number_is_accepted():
-    clauses = segment(["5.1.  New Parameters\nThe wallet shall accept them."])
+    clauses = segment(["5.1.\xa0\xa0New Parameters\nThe wallet shall accept them."])
     assert clauses[0].id == "5.1" and clauses[0].title == "New Parameters"
 
 

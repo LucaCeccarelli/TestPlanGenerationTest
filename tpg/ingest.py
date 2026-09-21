@@ -5,8 +5,8 @@ from pathlib import Path
 
 from tpg.models import Clause
 
-HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t ]+([A-Z].*)$")
-NUMBER_ONLY_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)*)\.?[ \t ]*$")
+HEADING_RE = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t\xa0]+([A-Z].*)$")
+NUMBER_ONLY_RE = re.compile(r"^(\d+\.\d+(?:\.\d+)*)\.?[ \t\xa0]*$")
 MAX_HEADING_LEN = 90
 
 
@@ -91,7 +91,7 @@ def segment(pages: list[str]) -> list[Clause]:
     current: Clause | None = None
     for page in pages:
         for raw in _join_number_only_lines(page.splitlines()):
-            line = raw.replace(" ", " ").strip()
+            line = raw.replace("\xa0", " ").strip()
             head = _heading(line)
             if head:
                 current = Clause(id=head[0], title=head[1], text="")
