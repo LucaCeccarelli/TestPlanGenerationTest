@@ -33,3 +33,10 @@ def test_write_plan_json_and_yaml(tmp_path):
     assert j == y
     assert j["requirements"][0]["id"] == "REQ-5.1-1"
     assert list(j.keys()) == ["source", "requirements", "test_cases", "traceability", "gaps"]
+
+
+def test_write_plan_is_utf8(tmp_path):
+    plan = build_plan(SRC, [R1.model_copy(update={"text": "réponse ≤ 500 ms"})], [], [])
+    write_plan(plan, str(tmp_path / "p.json"), "json")
+    raw = (tmp_path / "p.json").read_bytes()
+    assert "réponse ≤ 500 ms".encode("utf-8") in raw

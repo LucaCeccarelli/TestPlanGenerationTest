@@ -14,7 +14,7 @@ def build_plan(source: Source, requirements: list[Requirement], test_cases: list
 
 def write_plan(plan: TestPlan, path: str, fmt: str = "json") -> None:
     data = plan.model_dump(mode="json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         if fmt == "yaml":
             yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
         else:
