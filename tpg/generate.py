@@ -83,7 +83,7 @@ def generate_item(item: CoverageItem, source: Requirement | TestObject, clause: 
         try:
             draft = llm.complete(build_generate_prompt(item, source, clause, failures), TestCaseDraft)
         except LLMError as e:
-            failures = [str(e)]
+            failures = failures + [str(e)]
             continue
         failures = check_test_case(item, draft)
         if not failures:

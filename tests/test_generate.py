@@ -47,7 +47,7 @@ def test_generate_item_retries_then_gap(fake_llm):
     llm = fake_llm([weak, LLMError("bad json"), weak])
     tc, gap = generate_item(ITEM, OBJ, CLAUSE, llm)
     assert tc is None and gap is not None and gap.stage == "generate" and gap.source_id == "OBJ-5.4-1"
-    assert ITEM.id in gap.reason and "reject" in llm.prompts[1] and "bad json" in llm.prompts[2]
+    assert ITEM.id in gap.reason and "reject" in llm.prompts[1] and "bad json" in llm.prompts[2] and "reject" in llm.prompts[2]
 
 
 def test_generate_collects_across_items(fake_llm):
