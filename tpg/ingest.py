@@ -10,7 +10,7 @@ from tpg.models import Clause
 NUM = r"(?:\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)"
 # ponytail: a bare letter (no dotted digit after it) is excluded on purpose - "A" or "I" alone is an
 # English word, not a clause id; a letter-only clause id must come through the "Annex [A-Z]" branch below
-HEADING_RE = re.compile(rf"^({NUM}|Annex[ \t\xa0]+[A-Z])\.?[ \t\xa0]+([A-Za-z].*)$")
+HEADING_RE = re.compile(rf"^({NUM}|Annex[ \t\xa0]+[A-Z])\.?([ \t\xa0]+)([A-Za-z].*)$")
 NUMBER_ONLY_RE = re.compile(r"^((?:\d+|[A-Z])\.\d+(?:\.\d+)*)\.?[ \t\xa0]*$")
 MAX_HEADING_LEN = 90
 JOINED = "\x0e"   # marks a heading rebuilt from a number-only line and the following title line
@@ -24,20 +24,25 @@ LIGATURES = str.maketrans({"\x01": "fi", "\x02": "fl", "\x03": "ff", "\x04": "fl
 
 def table_rows(rows: list[list[str]]) -> str:
     """Row records: 'Header: cell | Header: cell' per data row; an empty first cell inherits the
-    previous row's first cell (merged cells); fully empty rows are dropped."""
+    previous row's first cell (merged cells); fully empty rows are dropped. A cell the extractor
+    could not read at all (None, not just blank) anywhere but the first column means that row's
+    column split failed - skip it rather than mis-render the merged text as a clean row or, worse,
+    as unprefixed plain text that could be misread as something else entirely."""
     clean = [[" ".join(str(c).split()) if c else "" for c in row] for row in rows]
     if len(clean) < 2:
         return ""
     header = clean[0]
     out: list[str] = []
     prev_first = ""
-    for row in clean[1:]:
+    for raw_row, row in zip(rows[1:], clean[1:]):
         if not any(row):
+            continue
+        if any(c is None for c in raw_row[1:]):
             continue
         if not row[0]:
             row[0] = prev_first
         prev_first = row[0]
-        out.append(" | ".join(f"{h}: {c}" for h, c in zip(header, row) if h or c))
+        out.append(" | ".join((f"{h}: {c}" if h else c) for h, c in zip(header, row) if h or c))
     return "\n".join(out)
 
 
@@ -212,8 +217,9 @@ def _heading(line: str) -> tuple[str, str] | None:
     m = HEADING_RE.match(line)
     if not m:
         return None
-    number, title = re.sub(r"^Annex[ \t\xa0]+", "", m.group(1)), m.group(2).strip()
-    if not joined and not title[:1].isupper():
+    number, title = re.sub(r"^Annex[ \t\xa0]+", "", m.group(1)), m.group(3).strip()
+    tab_separated = "\t" in m.group(2)
+    if not joined and not tab_separated and not title[:1].isupper():
         return None
     return number, title
 
@@ -266,20 +272,26 @@ def _succ(a: str, b: str) -> bool:
 
 
 def follows(prev: str | None, new: str) -> bool:
-    """A heading number is plausible if it starts a new top level, is the first descendant of the
-    current heading at any depth (every component past the shared prefix is "1" - the very first
-    entry into levels that have not been seen yet), or is the successor (increment 1 or 2, one
-    heading may be missed) at the current level or at any ancestor level."""
+    """A heading number is plausible if it starts a new top level that succeeds the current top
+    level (or is the first lettered annex after a numbered body, or is a bare "1" - numbered bodies
+    almost always restart there, so it is always accepted and resets the sequence; this recovers
+    from a stray match, such as a cover-page date, seeding the very first "previous" heading), is
+    the first descendant of the current heading at any depth (every component past the shared
+    prefix is "1" - the very first entry into levels that have not been seen yet), or is the
+    successor (increment 1 or 2, one heading may be missed) at the current level or at any ancestor
+    level - even one whose own heading was never seen (an implied parent). A jump that skips a
+    level, such as 1 followed by 5.1, is rejected; the parent heading must exist."""
     if prev is None:
         return True
     p, n = _parts(prev), _parts(new)
     if len(n) == 1:
-        return True
+        return n[0] == "1" or _succ(p[0], n[0]) or (p[0].isdigit() and n[0] == "A")
     if len(n) > len(p) and n[: len(p)] == p and all(c == "1" for c in n[len(p) :]):
         return True
     for k in range(1, len(p) + 1):
         anc = p[:k]
-        if len(n) == len(anc) and n[:-1] == anc[:-1] and _succ(anc[-1], n[-1]):
+        if (len(n) >= len(anc) and n[:k - 1] == anc[:k - 1]
+                and _succ(anc[-1], n[k - 1]) and all(c == "1" for c in n[k:])):
             return True
     return False
 

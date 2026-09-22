@@ -4,6 +4,10 @@
 
 This document specifies the behaviour of the sample device. It contains no requirements.
 
+## 3 Terms and definitions
+
+No special terms are used in this document.
+
 ## 5 Requirements
 
 The following clauses define the requirements for the sample device.
