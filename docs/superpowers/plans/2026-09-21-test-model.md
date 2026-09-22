@@ -1061,6 +1061,13 @@ def test_extract_objects_clause_retries_invalid_and_keeps_valid(fake_llm):
     assert len(llm.prompts) == 3 and "bad json" in llm.prompts[2] and "nonce" in llm.prompts[1]
 
 
+def test_extract_objects_clause_empty_retry_keeps_failure_open(fake_llm):
+    bad = {**LOCALE, "source_quote": "nope"}
+    llm = fake_llm([{"objects": [bad]}, {"objects": []}, {"objects": []}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert objs == [] and gap is not None and gap.attempts == 3 and "nope" in gap.reason and len(llm.prompts) == 3
+
+
 def test_extract_objects_skips_clauses_without_candidates_or_rows(fake_llm):
     prose = Clause(id="1", title="Scope", text="This document describes things.")
     rows_only = Clause(id="2", title="Codes", text="Code: 01 | Meaning: car\nCode: 03 | Meaning: truck")
@@ -1518,9 +1525,12 @@ def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list
             try:
                 batch = llm.complete(prompt, TestObjectBatch)
             except LLMError as e:
-                failures = [str(e)]
+                failures = failures + [str(e)]
                 continue
-            failures = _accept(clause, batch.objects, accepted)
+            before = len(accepted)
+            new_failures = _accept(clause, batch.objects, accepted)
+            resolved = len(accepted) - before          # newly accepted objects count as resolved open failures
+            failures = failures[resolved:] + new_failures
             if not failures:
                 break
         open_failures.extend(failures)
