@@ -70,3 +70,36 @@ def test_complete_wraps_transport_errors(monkeypatch):
 def test_bearer_header_only_when_key_given():
     assert "Authorization" not in OllamaLLM(model="m", host="http://x").headers
     assert OllamaLLM(model="m", host="http://x", api_key="k").headers["Authorization"] == "Bearer k"
+
+
+def test_timeout_default_and_env(monkeypatch):
+    monkeypatch.delenv("OLLAMA_TIMEOUT", raising=False)
+    assert OllamaLLM(model="m", host="http://x").timeout == 120.0
+    monkeypatch.setenv("OLLAMA_TIMEOUT", "7.5")
+    assert OllamaLLM(model="m", host="http://x").timeout == 7.5
+    assert OllamaLLM(model="m", host="http://x", timeout=3).timeout == 3
+
+
+def test_client_receives_timeout(monkeypatch):
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, host, headers, timeout):
+            seen.update(host=host, headers=headers, timeout=timeout)
+
+    import ollama
+    monkeypatch.setattr(ollama, "Client", FakeClient)
+    llm = OllamaLLM(model="m", host="http://x", timeout=9)
+    llm._get_client()
+    assert seen["timeout"] == 9 and seen["host"] == "http://x"
+
+
+def test_transport_timeout_becomes_llmerror(monkeypatch):
+    llm = OllamaLLM(model="m", host="http://x")
+
+    def slow(prompt, schema):
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(llm, "_chat", slow)
+    with pytest.raises(LLMError):
+        llm.complete("p", Out)

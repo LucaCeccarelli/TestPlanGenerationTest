@@ -55,17 +55,24 @@ def clean_json(text: str) -> str:
 
 
 class OllamaLLM:
-    def __init__(self, model: str, host: str | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str,
+        host: str | None = None,
+        api_key: str | None = None,
+        timeout: float | None = None,
+    ):
         self.model = model
         self.host = host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
         key = api_key if api_key is not None else os.environ.get("OLLAMA_API_KEY")
         self.headers = {"Authorization": f"Bearer {key}"} if key else {}
+        self.timeout = timeout if timeout is not None else float(os.environ.get("OLLAMA_TIMEOUT", 120))
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             import ollama
-            self._client = ollama.Client(host=self.host, headers=self.headers)
+            self._client = ollama.Client(host=self.host, headers=self.headers, timeout=self.timeout)
         return self._client
 
     def check(self) -> None:

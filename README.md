@@ -29,7 +29,8 @@ coverage items it produced and the test cases written for them.
 
 Ollama server: local by default (`http://localhost:11434`). For a remote server set
 `OLLAMA_HOST`, and `OLLAMA_API_KEY` if it needs one. A `.env` file in the working directory
-is read (`KEY=VALUE` lines).
+is read (`KEY=VALUE` lines). `OLLAMA_TIMEOUT` (seconds, default 120) bounds each model call; a
+stalled call counts as a failed attempt.
 
 ## Run
 
