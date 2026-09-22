@@ -168,6 +168,12 @@ def test_table_rows_format_and_merged_first_cell():
     assert table_rows(rows) == "Name: nonce | Presence: M | Type: text\nName: nonce | Presence: O | Type: int"
 
 
+def test_single_row_table_keeps_its_text(tmp_path):
+    md = tmp_path / "t.md"
+    md.write_text("## 5.4 Note\n\n| The unit shall log every event. | see 5.1 |\n")
+    assert "The unit shall log every event. | see 5.1" in ingest(str(md))[0].text
+
+
 def test_follows_sequence_rules():
     assert follows(None, "1") and follows("1", "2") and follows("1", "1.1") and follows("1.1", "1.2")
     assert follows("7.4.9", "7.5") and follows("7.4.9", "8") and follows("1.1", "1.3")  # one missed heading tolerated

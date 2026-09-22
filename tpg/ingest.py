@@ -33,8 +33,10 @@ def table_rows(rows: list[list[str]]) -> str:
     column split failed - skip it rather than mis-render the merged text as a clean row or, worse,
     as unprefixed plain text that could be misread as something else entirely."""
     clean = [[" ".join(str(c).split()) if c else "" for c in row] for row in rows]
-    if len(clean) < 2:
+    if not clean:
         return ""
+    if len(clean) < 2:
+        return " | ".join(cell for cell in clean[0] if cell)
     header = clean[0]
     out: list[str] = []
     prev_first = ""
