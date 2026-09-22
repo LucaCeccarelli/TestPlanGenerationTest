@@ -74,6 +74,11 @@ Rules:
   restates a preceding obligation without a modal verb of its own, fold its detail into the "text" of the requirement whose
   sentence does carry the modal verb, and quote that sentence.
 - Copy source_quote exactly as printed, including unusual characters. A table row line "Header: value | Header: value" is text too.
+- Words such as "need to", "needs to", "has to", "is to", "is required", "requires" are NOT modal verbs here. A sentence whose
+  only obligation word is one of those cannot be a source_quote: quote the nearby sentence that does carry shall, must, should
+  or may, and put the detail in "text".
+- Before replying, re-read every source_quote: it must literally contain the word shall, must, should or may that matches its
+  "modality" ("not" or "never" right after it for shall_not and should_not). If one does not, requote it or drop that requirement.
 - If none of the candidate sentences states an obligation of the system under test (e.g. bibliography entries, definitions of the
   words shall/should/may, dates), return an empty list.
 {feedback}

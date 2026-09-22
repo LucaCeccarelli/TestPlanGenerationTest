@@ -21,7 +21,7 @@ class StubLLM:
 
 
 def _stub_run(plan):
-    return lambda path, llm, model, clause_ids=None, attempts=3, log=None: plan
+    return lambda path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True: plan
 
 
 def test_exit_0_and_writes_json(tmp_path, monkeypatch):
@@ -61,7 +61,7 @@ def test_exit_1_when_input_missing(tmp_path, monkeypatch, capsys):
 def test_clauses_flag_is_split_and_passed(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_run(path, llm, model, clause_ids=None, attempts=3, log=None):
+    def fake_run(path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True):
         seen["clause_ids"] = clause_ids
         seen["model"] = model
         return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
@@ -111,3 +111,16 @@ def test_exit_1_when_output_unwritable(tmp_path, monkeypatch, capsys):
     out = tmp_path / "no_such_dir" / "p.json"
     assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(out)]) == 1
     assert "cannot write" in capsys.readouterr().err
+
+
+def test_no_model_flag_is_passed(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True):
+        seen["use_model"] = use_model
+        return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
+
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    monkeypatch.setattr(cli, "run", fake_run)
+    cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-model"])
+    assert seen == {"use_model": False}

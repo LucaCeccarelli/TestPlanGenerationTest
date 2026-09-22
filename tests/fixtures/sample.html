@@ -12,4 +12,7 @@
 <p>If the request is malformed or the session has expired, the device shall not process the request and should return an error code.</p>
 <h2>5.3 Terminology note</h2>
 <p>The word "device" means the unit under test. Nothing here is required.</p>
+<h2>5.4 Request parameters</h2>
+<table><tr><th>Name</th><th>Presence</th><th>Type</th></tr><tr><td>nonce</td><td>mandatory</td><td>text string of 16 to 64 characters</td></tr><tr><td>locale</td><td>optional</td><td>BCP 47 language tag</td></tr></table>
+<p>The reader shall reject a request whose nonce is missing.</p>
 </body></html>

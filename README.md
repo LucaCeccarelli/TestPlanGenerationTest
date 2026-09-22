@@ -1,9 +1,27 @@
 # tpg -- test plan generator
 
 Turns a technical standard (PDF, DOCX, Markdown, HTML, text) into a JSON or YAML test plan:
-atomic requirements, ISO/IEC/IEEE 29119-3 test cases (nominal, negative, boundary), a
-requirement-to-test traceability matrix, and a list of gaps the pipeline could not fill.
+atomic requirements, the objects the text defines, the coverage items they imply,
+ISO/IEC/IEEE 29119-3 test cases (nominal, negative, boundary), a per-source traceability matrix,
+and a list of gaps the pipeline could not fill.
 Design and rationale: `docs/superpowers/specs/2026-09-21-test-plan-generator-design.md`.
+
+## How test cases are derived
+
+1. **Requirements**: sentences carrying a modal verb (shall, shall not, should, should not, may),
+   each kept with its conditions and a verbatim quote from the clause it came from.
+2. **Objects**: the elements, fields, parameters, messages, values and behaviours the clause defines
+   or constrains, read from prose and from tables, with the presence, type, value domain, size and
+   relations the text states. `--no-model` skips this stage, leaving sentence-level requirements only.
+3. **Coverage items**: enumerated deterministically from requirements and objects, without the model --
+   presence and absence, encoding valid and invalid, value domain valid and invalid, boundaries
+   (minimum, maximum, outside), consistency relations, each condition true and false, and plain
+   nominal and negative checks for requirements that state no conditions.
+4. **Test cases**: one per coverage item, written by the model and grounded in the clause text.
+
+The plan therefore carries `requirements`, `objects`, `coverage_items`, `test_cases`, `traceability`
+and `gaps`. Traceability is per source: one entry per requirement and per object, listing the
+coverage items it produced and the test cases written for them.
 
 ## Setup
 
@@ -17,6 +35,7 @@ is read (`KEY=VALUE` lines).
 
     uv run tpg generate standard.pdf --out plan.json
     uv run tpg generate standard.pdf --out plan.yaml --format yaml --model gemma4:31b --clauses 5.1,5.2 --attempts N
+    uv run tpg generate standard.pdf --out plan.json --no-model   # requirements only, no object stage
 
 Exit code 0: no gaps. 2: some requirements or clauses ended in `gaps` (still written). 1: bad input or Ollama unreachable.
 
