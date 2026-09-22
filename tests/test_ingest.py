@@ -53,8 +53,11 @@ def test_long_line_is_not_a_heading():
 
 
 def test_openid_pdf_has_expected_clauses():
-    ids = {c.id for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
+    clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
+    ids = {c.id for c in clauses}
     assert {"5", "5.1", "5.2"} <= ids
+    assert {"9", "10", "11", "12", "13"} <= ids
+    assert max(len(c.text) for c in clauses) < 60000
 
 
 def test_duplicate_ids_are_unique_after_segmentation():
@@ -139,6 +142,8 @@ def test_follows_sequence_rules():
     assert follows("B.2", "B.3") and follows("B", "B.1") and follows("A.3.4", "B") and not follows("B.2", "5.2")
     assert follows("9.3.2", "A") and follows("11", "A") and not follows("E.2.2", "10") and not follows("17", "8949")
     assert follows("5", "6.1") and follows("7.2", "7.3.1")
+    assert follows("9", "1") and follows("C.3", "1", prev_empty=True) and not follows("8.6", "1")
+    assert not follows("8.6", "1", prev_empty=False)
 
 
 def test_letter_prefixed_and_annex_headings():

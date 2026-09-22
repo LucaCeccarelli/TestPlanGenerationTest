@@ -10,7 +10,7 @@ from tpg.models import Clause
 NUM = r"(?:\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)"
 # ponytail: a bare letter (no dotted digit after it) is excluded on purpose - "A" or "I" alone is an
 # English word, not a clause id; a letter-only clause id must come through the "Annex [A-Z]" branch below
-HEADING_RE = re.compile(rf"^({NUM}|Annex[ \t\xa0]+[A-Z])\.?([ \t\xa0]+)([A-Za-z].*)$")
+HEADING_RE = re.compile(rf"^({NUM}|(?:Annex|Appendix)[ \t\xa0]+[A-Z])\.?([ \t\xa0]+)([A-Za-z].*)$")
 NUMBER_ONLY_RE = re.compile(r"^((?:\d+|[A-Z])\.\d+(?:\.\d+)*)\.?[ \t\xa0]*$")
 MAX_HEADING_LEN = 90
 JOINED = "\x0e"   # marks a heading rebuilt from a number-only line and the following title line
@@ -217,14 +217,14 @@ def _heading(line: str) -> tuple[str, str] | None:
     m = HEADING_RE.match(line)
     if not m:
         return None
-    number, title = re.sub(r"^Annex[ \t\xa0]+", "", m.group(1)), m.group(3).strip()
+    number, title = re.sub(r"^(?:Annex|Appendix)[ \t\xa0]+", "", m.group(1)), m.group(3).strip()
     tab_separated = "\t" in m.group(2)
     if not joined and not tab_separated and not title[:1].isupper():
         return None
     return number, title
 
 
-ANNEX_ONLY_RE = re.compile(r"^(Annex[ \t\xa0]+[A-Z])\.?[ \t\xa0]*$")
+ANNEX_ONLY_RE = re.compile(r"^((?:Annex|Appendix)[ \t\xa0]+[A-Z])\.?[ \t\xa0]*$")
 BRACKETED_WORD_RE = re.compile(r"^\([A-Za-z]+\)[ \t\xa0]*$")
 
 
@@ -271,11 +271,12 @@ def _succ(a: str, b: str) -> bool:
     return False
 
 
-def follows(prev: str | None, new: str) -> bool:
+def follows(prev: str | None, new: str, prev_empty: bool = False) -> bool:
     """A heading number is plausible if it starts a new top level that succeeds the current top
-    level (or is the first lettered annex after a numbered body, or is a bare "1" - numbered bodies
-    almost always restart there, so it is always accepted and resets the sequence; this recovers
-    from a stray match, such as a cover-page date, seeding the very first "previous" heading), is
+    level (or is the first lettered annex after a numbered body, or is a bare "1" restarting a
+    numbered body right after a cover page or a table of contents - both recognisable purely by
+    layout: the previous heading was itself top-level, such as a cover-page date, or the previous
+    heading has no body text yet, which is what a run of table-of-contents entries looks like), is
     the first descendant of the current heading at any depth (every component past the shared
     prefix is "1" - the very first entry into levels that have not been seen yet), or is the
     successor (increment 1 or 2, one heading may be missed) at the current level or at any ancestor
@@ -285,7 +286,8 @@ def follows(prev: str | None, new: str) -> bool:
         return True
     p, n = _parts(prev), _parts(new)
     if len(n) == 1:
-        return n[0] == "1" or _succ(p[0], n[0]) or (p[0].isdigit() and n[0] == "A")
+        return (_succ(p[0], n[0]) or (p[0].isdigit() and n[0] == "A")
+                or (n[0] == "1" and (len(p) == 1 or prev_empty)))
     if len(n) > len(p) and n[: len(p)] == p and all(c == "1" for c in n[len(p) :]):
         return True
     for k in range(1, len(p) + 1):
@@ -304,7 +306,7 @@ def segment(pages: list[str]) -> list[Clause]:
         for raw in _join_number_only_lines(page.splitlines()):
             line = raw.replace("\xa0", " ").replace("\u00ad", "").strip()
             head = _heading(line)
-            if head and follows(last_number, head[0]):
+            if head and follows(last_number, head[0], prev_empty=(current is None or not current.text)):
                 current = Clause(id=head[0], title=head[1], text="")
                 clauses.append(current)
                 last_number = head[0]
