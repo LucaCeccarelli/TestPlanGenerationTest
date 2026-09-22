@@ -27,27 +27,27 @@ def llm():
 
 def _assert_plan_is_sound(plan, path):
     clauses = {c.id: c for c in ingest(str(path))}
+    # zero gaps is the acceptance criterion; the checks below therefore need no gap tolerance
     assert plan.gaps == [], [g.model_dump() for g in plan.gaps]
     assert plan.requirements, "no requirements extracted"
-    gapped = {g.source_id for g in plan.gaps}
     for r in plan.requirements:
         assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
     for o in plan.objects:
         assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
     covered = {t.coverage_item_id for t in plan.test_cases}
     for i in plan.coverage_items:
-        assert i.id in covered or i.source_id in gapped, i.id
+        assert i.id in covered, i.id
     # every requirement, and every object the text states an attribute for, is traced to coverage
     # items and to one test case each; an object with no stated attribute yields nothing by design
     for r in plan.requirements:
         link = next(t for t in plan.traceability if t.source_id == r.id)
         assert link.coverage_item_ids, r.id
-        assert len(link.test_case_ids) == len(link.coverage_item_ids) or r.id in gapped, r.id
+        assert len(link.test_case_ids) == len(link.coverage_item_ids), r.id
     for o in plan.objects:
         link = next(t for t in plan.traceability if t.source_id == o.id)
-        stated = o.presence != "unspecified" or o.type or o.value_domain or o.size or o.relations
+        stated = o.presence != "unspecified" or o.type or o.value_domain or o.size or o.relations or o.condition
         assert link.coverage_item_ids or not stated, o.id
-        assert len(link.test_case_ids) == len(link.coverage_item_ids) or o.id in gapped, o.id
+        assert len(link.test_case_ids) == len(link.coverage_item_ids), o.id
 
 
 def test_sample_markdown(llm):
