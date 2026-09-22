@@ -114,6 +114,7 @@ def extract_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[Require
     open_failures: list[str] = []
     parts = chunks(clause.text)
     for i, chunk in enumerate(parts, 1):
+        # ponytail: a sentence wrapped across a chunk boundary is not seen; chunks split at line ends to keep that rare
         candidates = find_candidates(chunk)
         if not candidates:
             continue
@@ -123,9 +124,12 @@ def extract_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[Require
             try:
                 batch = llm.complete(prompt, RequirementBatch)
             except LLMError as e:
-                failures = [str(e)]
+                failures = failures + [str(e)]
                 continue
-            failures = _accept(clause, batch.requirements, accepted)
+            before = len(accepted)
+            new_failures = _accept(clause, batch.requirements, accepted)
+            resolved = len(accepted) - before          # newly accepted drafts count as resolved open failures
+            failures = failures[resolved:] + new_failures
             if not failures:
                 break
         open_failures.extend(failures)

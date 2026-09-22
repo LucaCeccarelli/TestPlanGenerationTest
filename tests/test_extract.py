@@ -166,3 +166,28 @@ def test_extract_clause_chunks_long_clause(fake_llm):
     reqs, gap = extract_clause(long, llm)
     assert gap is None and reqs == [] and 2 <= len(llm.prompts) <= 4
     assert "part 1/" in llm.prompts[0]
+
+
+def test_extract_clause_empty_retry_does_not_clear_open_failures(fake_llm):
+    bad = {"requirements": [{"text": "x", "modality": "shall", "source_quote": "not in clause"}]}
+    llm = fake_llm([bad, {"requirements": []}, bad])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert reqs == [] and gap is not None and gap.attempts == 3 and "not in clause" in gap.reason
+    assert len(llm.prompts) == 3 and "not in clause" in llm.prompts[2]
+
+
+def test_extract_clause_partial_fix_keeps_remaining_failure_open(fake_llm):
+    bad1 = {"text": "x", "modality": "shall", "source_quote": "nope one"}
+    bad2 = {"text": "y", "modality": "shall", "source_quote": "nope two"}
+    good = GOOD["requirements"][0]
+    llm = fake_llm([{"requirements": [bad1, bad2]}, {"requirements": [good]}, {"requirements": []}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert len(reqs) == 1 and gap is not None and "nope" in gap.reason and len(llm.prompts) == 3
+
+
+def test_extract_clause_llm_error_keeps_pending_failures(fake_llm):
+    bad = {"requirements": [{"text": "x", "modality": "shall", "source_quote": "nope"}]}
+    llm = fake_llm([bad, LLMError("bad json"), bad])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert gap is not None and "nope" in gap.reason
+    assert "nope" in llm.prompts[2] and "bad json" in llm.prompts[2]
