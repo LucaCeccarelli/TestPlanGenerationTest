@@ -25,7 +25,7 @@ TC = {"objective": "o", "preconditions": [], "inputs": [], "steps": ["s"], "expe
 
 
 def test_run_end_to_end_with_fake(fake_llm):
-    # sample.md: clauses 1, 5.1, 5.2, 5.3, 5.4; candidates in 5.1, 5.2, 5.4; rows only in 5.4.
+    # sample.md: clauses 1, 3, 5, 5.1, 5.2, 5.3, 5.4; candidates in 5.1, 5.2, 5.4; rows only in 5.4.
     llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54], fallback=TC)
     lines = []
     plan = run(str(FIX / "sample.md"), llm, model="fake", log=lines.append)

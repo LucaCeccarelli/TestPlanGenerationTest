@@ -37,7 +37,13 @@ is read (`KEY=VALUE` lines).
     uv run tpg generate standard.pdf --out plan.yaml --format yaml --model gemma4:31b --clauses 5.1,5.2 --attempts N
     uv run tpg generate standard.pdf --out plan.json --no-model   # requirements only, no object stage
 
-Exit code 0: no gaps. 2: some requirements or clauses ended in `gaps` (still written). 1: bad input or Ollama unreachable.
+Cost: one LLM call per coverage item plus one per clause chunk for requirements and one for
+objects; a small clause with three objects costs about ten calls. Use `--clauses` to scope a run
+and `--no-model` for the cheaper sentence-level plan.
+
+Exit code 0: no gaps. 2: some clauses ended in `gaps` at the extract or model stage, or some
+coverage items ended in `gaps` at the generate stage (the plan is still written). 1: bad input or
+Ollama unreachable.
 
 RFCs: feed the `.txt` or `.html` from the RFC Editor; the PDF rendering loses section numbers and falls back to page-level clauses.
 
@@ -46,6 +52,10 @@ RFCs: feed the `.txt` or `.html` from the RFC Editor; the PDF rendering loses se
 - Unnumbered documents fall back to one clause per top-level heading (or per page for PDFs).
 - PDF fonts without a Unicode map may still yield odd characters.
 - Requirement ids are stable per document and model, not across re-runs with a different model.
+- Structural markers are English-only: `Annex`, `Appendix`, `Table`, and the modal verbs shall,
+  must, should, may. Documents using other-language equivalents will under-segment or under-extract.
+- A zero-gap run is an optimistic signal, not a proof: a retry that answers with an unrelated but
+  valid draft can close an open failure without actually fixing it.
 
 ## Tests
 
