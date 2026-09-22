@@ -1,7 +1,7 @@
 import pytest
 
-from tpg.extract import (build_extract_prompt, check_requirements, extract, extract_clause,
-                         find_candidates)
+from tpg.extract import (build_extract_prompt, check_draft, check_requirements, chunks, extract,
+                         extract_clause, find_candidates)
 from tpg.llm import LLMError
 from tpg.models import Clause, RequirementDraft
 
@@ -76,7 +76,7 @@ def test_check_requirements_empty_batch_is_ok():
 
 
 def test_prompt_contains_clause_candidates_and_failures():
-    p = build_extract_prompt(CLAUSE, ["c1", "c2"], ["prev failure"])
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1", "c2"], ["prev failure"], [])
     assert "5.2" in p and "c1" in p and "c2" in p and "prev failure" in p
 
 
@@ -123,3 +123,46 @@ def test_extract_skips_clauses_without_candidates(fake_llm):
     llm = fake_llm([GOOD])
     reqs, gaps = extract([info, CLAUSE], llm)
     assert len(llm.prompts) == 1 and len(reqs) == 2 and gaps == []
+
+
+def test_should_not_and_never_are_grounded():
+    c = Clause(id="1", title="t", text="Other elements should not be present. A counter shall never be reused.")
+    ok = [RequirementDraft(text="a", modality="should_not", source_quote="Other elements should not be present."),
+          RequirementDraft(text="b", modality="shall_not", source_quote="A counter shall never be reused.")]
+    assert check_requirements(c, ok) == []
+    assert check_draft(c, 1, RequirementDraft(text="a", modality="should", source_quote="should not be present")) is not None
+
+
+def test_chunks_split_at_line_boundaries_under_limit():
+    text = "\n".join(f"line {i} " + "x" * 90 for i in range(100))
+    parts = chunks(text, limit=1000)
+    assert len(parts) >= 9 and all(len(p) <= 1000 for p in parts)
+    assert "\n".join(parts) == text
+
+
+def test_extract_clause_keeps_valid_drafts_and_retries_only_invalid(fake_llm):
+    bad = {"text": "x", "modality": "shall", "source_quote": "not in clause"}
+    good1 = GOOD["requirements"][0]
+    fixed = GOOD["requirements"][1]
+    llm = fake_llm([{"requirements": [good1, bad]}, {"requirements": [fixed]}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert gap is None and [r.modality for r in reqs] == ["shall_not", "may"]
+    assert len(llm.prompts) == 2
+    assert "not in clause" in llm.prompts[1] and good1["text"] in llm.prompts[1]
+
+
+def test_extract_clause_gap_keeps_accepted_requirements(fake_llm):
+    bad = {"text": "x", "modality": "shall", "source_quote": "nope"}
+    good1 = GOOD["requirements"][0]
+    llm = fake_llm([{"requirements": [good1, bad]}, {"requirements": [bad]}, {"requirements": [bad]}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert len(reqs) == 1 and reqs[0].id == "REQ-5.2-1"
+    assert gap is not None and gap.attempts == 3 and "nope" in gap.reason
+
+
+def test_extract_clause_chunks_long_clause(fake_llm):
+    long = Clause(id="9", title="t", text="\n".join(f"Item {i}: the unit shall do thing {i}." for i in range(400)))
+    llm = fake_llm([{"requirements": []}] * 10)
+    reqs, gap = extract_clause(long, llm)
+    assert gap is None and reqs == [] and 2 <= len(llm.prompts) <= 4
+    assert "part 1/" in llm.prompts[0]

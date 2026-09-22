@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Modality = Literal["shall", "shall_not", "should", "may"]
+Modality = Literal["shall", "shall_not", "should", "should_not", "may"]
 Kind = Literal["nominal", "negative", "boundary"]
 
 
