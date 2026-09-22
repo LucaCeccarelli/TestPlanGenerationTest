@@ -80,13 +80,17 @@ def merge_objects(drafts: list[TestObjectDraft]) -> list[TestObjectDraft]:
 
 
 def _accept(clause: Clause, drafts: list[TestObjectDraft], accepted: list[TestObjectDraft]) -> list[str]:
+    """Move valid, non-duplicate drafts into `accepted`; return the failure messages of the rest.
+    Re-emitting an already accepted object must not count as resolving an open failure."""
     failures = []
+    seen = {(norm(a.name), norm(a.source_quote)) for a in accepted}
     for n, d in enumerate(drafts, 1):
         msg = check_object(clause, n, d)
         if msg:
             failures.append(msg)
-        else:
+        elif (norm(d.name), norm(d.source_quote)) not in seen:
             accepted.append(d)
+            seen.add((norm(d.name), norm(d.source_quote)))
     return failures
 
 

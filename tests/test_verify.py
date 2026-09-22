@@ -31,6 +31,9 @@ def test_negative_items_need_a_rejection_style_expected_result():
     assert any("reject" in m for m in check_test_case(neg, draft(expected="The response is accepted")))
     assert check_test_case(neg, draft(expected="The request is rejected with an error")) == []
     assert check_test_case(neg, draft(expected="Nothing happens", pc="The obligation's effect is absent")) == []
+    assert any("reject" in m for m in check_test_case(neg, draft(expected="The device returns the response and no error is raised")))
+    assert check_test_case(neg, draft(expected="The device drops the request silently")) == []
+    assert check_test_case(neg, draft(expected="Nothing is returned")) == []
 
 
 def test_boundary_items_are_not_negative():

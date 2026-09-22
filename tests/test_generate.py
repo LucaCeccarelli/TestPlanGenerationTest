@@ -20,12 +20,20 @@ def test_context_excerpt_windows_around_quote():
     assert context_excerpt(CLAUSE, "missing quote") == CLAUSE.text
 
 
+def test_context_excerpt_finds_quote_wrapped_across_lines():
+    # the blank run collapses to one space when normalised, so a normalised index used as a raw
+    # offset lands the window ~2000 characters before the quote
+    body = "x" * 3000 + "\n" * 2000 + "The reader shall\nreject a request whose nonce\nis missing.\n" + "y" * 5000
+    ex = context_excerpt(Clause(id="1", title="t", text=body), "The reader shall reject a request whose nonce is missing.")
+    assert "reject a request whose nonce" in ex and len(ex) <= 2 * 1500 + 100
+
+
 def test_prompt_carries_purpose_source_and_kind_rule():
     p = build_generate_prompt(ITEM, OBJ, CLAUSE, ["old failure"])
     assert ITEM.purpose in p and "nonce" in p and "mandatory" in p and "negative" in p and "old failure" in p
     p2 = build_generate_prompt(CoverageItem(id="CI-REQ-5.4-1-nominal", source_id="REQ-5.4-1", clause_id="5.4", check="nominal",
                                             kind="nominal", purpose="x"), REQ, CLAUSE, [])
-    assert REQ.text in p2 and "condition_assignment" not in p2
+    assert REQ.text in p2 and "holds" not in p2
 
 
 def test_generate_item_sets_ids_kind_and_assignment(fake_llm):

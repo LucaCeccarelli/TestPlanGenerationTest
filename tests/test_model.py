@@ -45,6 +45,13 @@ def test_extract_objects_clause_retries_invalid_and_keeps_valid(fake_llm):
     assert len(llm.prompts) == 3 and "bad json" in llm.prompts[2] and "nonce" in llm.prompts[1]
 
 
+def test_extract_objects_clause_reemitted_object_does_not_resolve_failure(fake_llm):
+    bad = {**LOCALE, "source_quote": "nope"}
+    llm = fake_llm([{"objects": [NONCE, bad]}, {"objects": [NONCE]}, {"objects": [NONCE]}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert [o.name for o in objs] == ["nonce"] and gap is not None and "nope" in gap.reason and len(llm.prompts) == 3
+
+
 def test_extract_objects_clause_empty_retry_keeps_failure_open(fake_llm):
     bad = {**LOCALE, "source_quote": "nope"}
     llm = fake_llm([{"objects": [bad]}, {"objects": []}, {"objects": []}])

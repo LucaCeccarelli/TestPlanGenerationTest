@@ -1,7 +1,10 @@
 """Rule checks on one generated test case against its coverage item. No LLM."""
 from tpg.models import CoverageItem, TestCaseDraft
 
-NEGATIVE_WORDS = ("reject", "error", "fail", "refuse", "ignore", "not ", "absent", "invalid", "discard", "abort", "terminat", "no ")
+# ponytail: word gate, not semantics; a cross-model critic would be the upgrade
+NEGATIVE_WORDS = ("reject", "error", "fail", "refuse", "ignore", "absent", "invalid", "discard", "abort", "terminat",
+                  "does not", "is not", "are not", "not be", "silently", "drop", "nothing", "no effect", "unchanged")
+NEGATIVE_EXCEPTIONS = ("no error", "without error", "not applicable", "fails to reject")
 
 
 def required_assignments(conditions: list[str]) -> list[dict[str, bool]]:
@@ -24,6 +27,8 @@ def check_test_case(item: CoverageItem, d: TestCaseDraft) -> list[str]:
         msgs.append("pass_criteria is empty")
     if item.kind == "negative":
         text = (d.expected_result + " " + d.pass_criteria).lower()
+        for e in NEGATIVE_EXCEPTIONS:
+            text = text.replace(e, " ")
         if not any(w in text for w in NEGATIVE_WORDS):
             msgs.append("a negative case must expect a rejection, an error, or the absence of the obligation's effect "
                         "(expected_result or pass_criteria must say so, e.g. 'is rejected', 'returns an error', 'is not ...')")

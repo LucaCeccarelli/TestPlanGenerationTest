@@ -1,7 +1,7 @@
 """One LLM call per coverage item, checked by verify.check_test_case, retried with feedback."""
 import json
+import re
 
-from tpg.extract import norm
 from tpg.llm import LLMError
 from tpg.models import Clause, CoverageItem, Gap, Requirement, TestCase, TestCaseDraft, TestObject
 from tpg.verify import check_test_case
@@ -25,18 +25,17 @@ WHOLE = 4000
 
 
 def context_excerpt(clause: Clause, quote: str) -> str:
+    """Window the clause around the quote. The quote may be wrapped across lines in the raw text, so it
+    is matched word by word with any whitespace between words."""
     text = clause.text
     if len(text) <= WHOLE:
         return text
-    pos = norm(text).find(norm(quote)[:60])
-    if pos < 0:
+    words = quote.split()[:8]
+    m = re.search(r"\s+".join(map(re.escape, words)), text, re.I) if words else None
+    if m is None:
         return text[:WHOLE]
-    # positions in the normalised text differ from the raw text; locate the raw quote start approximately
-    raw_pos = text.lower().find(quote.strip()[:30].lower())
-    if raw_pos < 0:
-        raw_pos = min(pos, len(text))
-    start = max(0, raw_pos - WINDOW)
-    return text[start:raw_pos + WINDOW]
+    start = max(0, m.start() - WINDOW)
+    return text[start:m.start() + WINDOW]
 
 
 def _describe_source(src: Requirement | TestObject) -> str:
