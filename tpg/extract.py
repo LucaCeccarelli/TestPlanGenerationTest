@@ -138,7 +138,7 @@ def extract_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[Require
     reqs = [Requirement(id=f"REQ-{clause.id}-{n}", clause_id=clause.id, **d.model_dump()) for n, d in enumerate(ordered, 1)]
     gap = None
     if open_failures:
-        gap = Gap(requirement_id=None, clause_id=clause.id, stage="extract", reason="; ".join(open_failures), attempts=attempts)
+        gap = Gap(source_id=None, clause_id=clause.id, stage="extract", reason="; ".join(open_failures), attempts=attempts)
     return reqs, gap
 
 

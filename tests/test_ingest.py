@@ -11,7 +11,9 @@ FIX = Path(__file__).parent / "fixtures"
 def test_sample_segments_into_known_clauses(name):
     clauses = ingest(str(FIX / name))
     ids = [c.id for c in clauses]
-    assert ["1", "5.1", "5.2", "5.3"] == [i for i in ids if i in ("1", "5.1", "5.2", "5.3")]
+    # sample.md gained clause 5.4 in Task 3; the other three fixtures are regenerated in Task 4
+    expected = ["1", "5.1", "5.2", "5.3", "5.4"] if name == "sample.md" else ["1", "5.1", "5.2", "5.3"]
+    assert expected == [i for i in ids if i in set(expected)]
     c51 = next(c for c in clauses if c.id == "5.1")
     assert c51.title == "Response time"
     assert "within 500 ms" in c51.text

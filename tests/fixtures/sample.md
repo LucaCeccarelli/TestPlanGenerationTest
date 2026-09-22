@@ -23,3 +23,12 @@ If the request is malformed or the session has expired, the device shall not pro
 ## 5.3 Terminology note
 
 The word "device" means the unit under test. Nothing here is required.
+
+## 5.4 Request parameters
+
+| Name | Presence | Type |
+|---|---|---|
+| nonce | mandatory | text string of 16 to 64 characters |
+| locale | optional | BCP 47 language tag |
+
+The reader shall reject a request whose nonce is missing.

@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         _err(f"cannot write {args.out}: {e.strerror or e}")
         return 1
-    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps")
+    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.objects)} objects, {len(plan.coverage_items)} coverage items, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps")
     return 2 if plan.gaps else 0
 
 

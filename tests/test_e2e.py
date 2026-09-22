@@ -31,15 +31,17 @@ def _assert_plan_is_sound(plan, path):
     assert plan.requirements, "no requirements extracted"
     for r in plan.requirements:
         assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
-        link = next(t for t in plan.traceability if t.requirement_id == r.id)
-        kinds = [c.kind for c in plan.test_cases if c.id in link.test_case_ids]
-        assert kinds.count("nominal") == 1, r.id
+        link = next(t for t in plan.traceability if t.source_id == r.id)
+        assert link.coverage_item_ids, r.id
+        assert len(link.test_case_ids) == len(link.coverage_item_ids), r.id
+    for o in plan.objects:
+        assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
 
 
 def test_sample_markdown(llm):
     plan = run(str(FIX / "sample.md"), llm, MODEL, log=print)
     _assert_plan_is_sound(plan, FIX / "sample.md")
-    assert {r.clause_id for r in plan.requirements} == {"5.1", "5.2"}
+    assert {r.clause_id for r in plan.requirements} == {"5.1", "5.2", "5.4"}
     cond = [r for r in plan.requirements if r.clause_id == "5.2" and r.modality == "shall_not"]
     assert cond and len(cond[0].conditions) == 2
 

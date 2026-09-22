@@ -34,7 +34,7 @@ def test_exit_0_and_writes_json(tmp_path, monkeypatch):
 
 
 def test_exit_2_when_gaps(tmp_path, monkeypatch):
-    gap = Gap(requirement_id=None, clause_id="5.1", stage="extract", reason="x", attempts=3)
+    gap = Gap(source_id=None, clause_id="5.1", stage="extract", reason="x", attempts=3)
     plan = TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[gap])
     monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
     monkeypatch.setattr(cli, "run", _stub_run(plan))

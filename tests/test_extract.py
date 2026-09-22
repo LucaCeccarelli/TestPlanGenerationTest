@@ -102,7 +102,7 @@ def test_extract_clause_gap_after_three_failures(fake_llm):
     reqs, gap = extract_clause(CLAUSE, fake_llm([bad, bad, bad]))
     assert reqs == []
     assert gap is not None and gap.stage == "extract" and gap.attempts == 3
-    assert gap.clause_id == "5.2" and gap.requirement_id is None and "nope" in gap.reason
+    assert gap.clause_id == "5.2" and gap.source_id is None and "nope" in gap.reason
 
 
 def test_extract_clause_ids_follow_source_order(fake_llm):
