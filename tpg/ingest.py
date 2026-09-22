@@ -329,7 +329,7 @@ def _dedupe_ids(clauses: list[Clause]) -> list[Clause]:
     suffix: dict[int, str] = {}
     for cid, group in groups.items():
         nonempty = [c for c in group if c.text]
-        survivors = nonempty if nonempty else [group[0]]
+        survivors = sorted(nonempty, key=lambda c: -len(c.text)) if nonempty else [group[0]]
         keep.update(id(c) for c in survivors)
         for n, c in enumerate(survivors[1:], 2):
             suffix[id(c)] = f"{cid}#{n}"

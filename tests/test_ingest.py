@@ -71,6 +71,22 @@ def test_duplicate_ids_are_unique_after_segmentation():
     assert next(c for c in clauses if c.id == "1").text == "Text A."
 
 
+def test_fullest_duplicate_keeps_bare_id():
+    # a bare-id transition backward (5.7 -> 5.8 -> 5.7) is rejected by follows(); a ToC-then-body
+    # duplicate reaches the same id again only via the "1" restart, as real ToCs do.
+    pages = ["5.7 Title\nshort\n7 Other\nx\n1 Intro\n3 More\n5 Overview\n"
+             "5.1 Sub\nBody one.\n5.3 Sub2\nBody three.\n5.5 Sub3\nBody five.\n"
+             "5.7 Title\nThe unit shall do the long real thing here.\n5.9 Next\ny"]
+    clauses = segment(pages)
+    by_id = {c.id: c for c in clauses}
+    assert by_id["5.7"].text.startswith("The unit shall") and by_id["5.7#2"].text == "short"
+
+
+def test_openid_real_clauses_keep_bare_ids():
+    by_id = {c.id: c for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
+    assert len(by_id["5.7"].text) > 200 and "5.7#2" in by_id
+
+
 def test_openid_pdf_ids_are_unique():
     clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
     ids = [c.id for c in clauses]
