@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tpg.ingest import follows, ingest, segment, strip_repeated, table_rows
+from tpg.ingest import CONTROL, follows, ingest, segment, strip_repeated, table_rows
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -130,6 +130,21 @@ def test_strip_repeated_keeps_short_documents_and_mid_page_lines():
     assert strip_repeated(pages) == pages
     four = ["Spec\n" + "\n".join(f"line {j}" for j in range(10)) + "\nTable 3 caption\nend"] * 4
     assert all("Table 3 caption" in p for p in strip_repeated(four))
+
+
+def test_control_characters_do_not_hide_repeated_footers():
+    pages = [f"Body {i}\nline a\nline b\nline c\nline d\n(c) Publisher 2020 - All rights reserved{chr(8) if i % 2 else ''}\n{i}" for i in range(1, 7)]
+    out = strip_repeated([p.translate(CONTROL) for p in pages])
+    assert all("All rights reserved" not in p for p in out)
+
+
+def test_iso_pdf_has_no_footer_inside_clauses():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    clauses = ingest(str(FIX / "iso_18013_5.pdf"))
+    hits = sum(c.text.count("All rights reserved") for c in clauses)
+    assert hits <= 2, hits
+    assert len(clauses) >= 250
 
 
 def test_table_rows_format_and_merged_first_cell():

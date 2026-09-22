@@ -20,6 +20,10 @@ EDGE_LINES = 4
 
 # ponytail: private-use glyph order is font-specific; extend the table if another PDF shows other control chars
 LIGATURES = str.maketrans({"\x01": "fi", "\x02": "fl", "\x03": "ff", "\x04": "fl", "\x05": "ffi"})
+# C0 controls except tab/lf/cr/ff, plus BOM and zero-width space: some PDF fonts emit a stray
+# control byte (e.g. \x08) on alternating pages, which splits strip_repeated's repetition key in
+# two and lets page furniture survive inside clause text.
+CONTROL = {c: None for c in [*range(0, 9), 11, *range(14, 32), 0xFEFF, 0x200B]}
 
 
 def table_rows(rows: list[list[str]]) -> str:
@@ -178,7 +182,7 @@ def read_pages(path: str) -> list[str]:
                 lines.append("\f")
             lines.append(re.sub(r"^#+\s*", "", line))
         pages = _pages("\n".join(lines))
-    return strip_repeated([pg.replace("\u00ad", "") for pg in pages])
+    return strip_repeated([pg.replace("\u00ad", "").translate(CONTROL) for pg in pages])
 
 
 def strip_repeated(pages: list[str]) -> list[str]:
