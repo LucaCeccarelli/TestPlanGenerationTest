@@ -106,6 +106,8 @@ def test_unset_vocabulary_falls_back_to_the_declared_default():
     assert o.presence == "unspecified" and o.direction == "internal"
     missing = TestObjectDraft.model_validate({"name": "n", "kind": None, "source_quote": "q"})
     assert missing.kind == ""
+    from tpg.models import RequirementDraft
+    assert RequirementDraft.model_validate({"text": "t", "modality": None, "source_quote": "q"}).modality == ""
 
 
 def test_presence_letter_codes_only_apply_to_a_lone_token():
