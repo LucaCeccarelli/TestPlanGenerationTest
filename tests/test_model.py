@@ -65,3 +65,18 @@ def test_extract_objects_skips_clauses_without_candidates_or_rows(fake_llm):
     llm = fake_llm([{"objects": []}, {"objects": [NONCE]}])
     objs, gaps = extract_objects([prose, rows_only, CLAUSE], llm)
     assert len(llm.prompts) == 2 and [o.id for o in objs] == ["OBJ-5.4-1"] and gaps == []
+
+
+def test_check_object_rejects_unrecognised_enum_values():
+    assert "kind" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "kind": "gadget"}))
+    assert "presence" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "presence": "sometimes"}))
+    assert "direction" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "direction": "sideways"}))
+    assert check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "presence": "M"})) is None
+
+
+def test_extract_objects_clause_survives_one_unrecognised_enum(fake_llm):
+    bad = {**LOCALE, "kind": "gadget"}
+    llm = fake_llm([{"objects": [NONCE, bad]}, {"objects": []}, {"objects": []}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert [o.name for o in objs] == ["nonce"]
+    assert gap is not None and "gadget" in gap.reason and len(llm.prompts) == 3

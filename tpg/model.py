@@ -1,7 +1,8 @@
 """Test model stage: the LLM lists the objects a clause defines or constrains; rules ground each object."""
 from tpg.extract import chunks, find_candidates, norm
 from tpg.llm import LLMError
-from tpg.models import Clause, Gap, TestObject, TestObjectBatch, TestObjectDraft
+from tpg.models import (DIRECTION_VALUES, OBJECT_KIND_VALUES, PRESENCE_VALUES, Clause, Gap,
+                        TestObject, TestObjectBatch, TestObjectDraft)
 
 
 def has_rows(text: str) -> bool:
@@ -45,6 +46,11 @@ Reply with JSON only: {{"objects": [{{"name": ..., "kind": ..., "direction": ...
 def check_object(clause: Clause, n: int, d: TestObjectDraft) -> str | None:
     if not d.name.strip():
         return f"object {n}: name is empty"
+    for field, allowed in (("kind", OBJECT_KIND_VALUES), ("direction", DIRECTION_VALUES),
+                           ("presence", PRESENCE_VALUES)):
+        value = getattr(d, field)
+        if value not in allowed:
+            return f"object {n} ({d.name}): {field} {value!r} is not one of {', '.join(allowed)}"
     q = norm(d.source_quote)
     if not q or q not in norm(clause.text):
         return f"object {n} ({d.name}): source_quote is not a verbatim substring of the clause: {d.source_quote!r}"

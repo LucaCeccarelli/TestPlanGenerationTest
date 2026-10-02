@@ -191,3 +191,18 @@ def test_extract_clause_llm_error_keeps_pending_failures(fake_llm):
     reqs, gap = extract_clause(CLAUSE, llm)
     assert gap is not None and "nope" in gap.reason
     assert "nope" in llm.prompts[2] and "bad json" in llm.prompts[2]
+
+
+def test_check_draft_rejects_an_unrecognised_modality():
+    d = RequirementDraft.model_validate({"text": "x", "modality": "obligatory",
+                                         "source_quote": "the device shall not process the request"})
+    msg = check_draft(CLAUSE, 1, d)
+    assert msg is not None and "modality" in msg and "obligatory" in msg
+
+
+def test_extract_clause_keeps_valid_drafts_when_another_has_a_bad_modality(fake_llm):
+    bad = {"text": "x", "modality": "obligatory", "conditions": [], "source_quote": "The device may log it."}
+    llm = fake_llm([{"requirements": [GOOD["requirements"][0], bad]}, {"requirements": []}, {"requirements": []}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert [r.modality for r in reqs] == ["shall_not"]
+    assert gap is not None and "obligatory" in gap.reason and len(llm.prompts) == 3
