@@ -86,3 +86,39 @@ def test_draft_schemas_still_advertise_their_vocabulary():
     assert props["presence"]["enum"] == list(PRESENCE_VALUES)
     modality = RequirementBatch.model_json_schema()["$defs"]["RequirementDraft"]["properties"]["modality"]
     assert modality["enum"] == list(MODALITY_VALUES)
+
+
+def test_negated_vocabulary_is_rejected_rather_than_flipped():
+    """Nothing downstream re-grounds presence, so a negated value must not be read as its opposite."""
+    from tpg.models import normalise_direction, normalise_object_kind, normalise_presence
+    for raw in ("not mandatory", "not required", "never optional", "not conditional"):
+        assert normalise_presence(raw) is None, raw
+    assert normalise_direction("not received") is None
+    assert normalise_object_kind("not a field") is None
+    assert normalise_presence("mandatory") == "mandatory" and normalise_direction("received") == "received"
+
+
+def test_unset_vocabulary_falls_back_to_the_declared_default():
+    """The prompt invites null for an attribute the text does not state; that must not cost the object."""
+    from tpg.models import TestObjectDraft
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q",
+                                        "presence": None, "direction": None})
+    assert o.presence == "unspecified" and o.direction == "internal"
+    missing = TestObjectDraft.model_validate({"name": "n", "kind": None, "source_quote": "q"})
+    assert missing.kind == ""
+
+
+def test_presence_letter_codes_only_apply_to_a_lone_token():
+    from tpg.models import normalise_presence
+    assert normalise_presence("M") == "mandatory" and normalise_presence("Ca") == "conditional"
+    assert normalise_presence("on demand") is None and normalise_presence("see note c") is None
+
+
+def test_structured_values_keep_their_content_as_json_and_flags_are_unset():
+    from tpg.models import TestCaseDraft, TestObjectDraft
+    t = TestCaseDraft.model_validate({"objective": "o", "steps": [{"param": "nonce", "value": "abc"}],
+                                      "expected_result": "r", "pass_criteria": "p"})
+    assert t.steps == ['{"param": "nonce", "value": "abc"}']
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q",
+                                        "type": False, "size": 0, "value_domain": {}})
+    assert o.type is None and o.size == "0" and o.value_domain == "{}"

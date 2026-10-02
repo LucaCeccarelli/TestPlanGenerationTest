@@ -3,7 +3,8 @@ draft; valid drafts are kept and only invalid ones are retried."""
 import re
 
 from tpg.llm import LLMError
-from tpg.models import Clause, Gap, Requirement, RequirementBatch, RequirementDraft
+from tpg.models import (MODALITY_VALUES, Clause, Gap, Requirement, RequirementBatch,
+                        RequirementDraft)
 
 CANDIDATE_RE = re.compile(r"\b(shall|must|should|may|is required to)\b", re.I)
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.;:])\s+(?=[A-Z(\"'])")
@@ -91,8 +92,8 @@ def check_draft(clause: Clause, n: int, d: RequirementDraft) -> str | None:
     q = norm(d.source_quote)
     if not q or q not in norm(clause.text):
         return f"requirement {n}: source_quote is not a verbatim substring of the clause: {d.source_quote!r}"
-    if d.modality not in MODAL_RE:
-        return f"requirement {n}: modality {d.modality!r} is not one of {', '.join(MODAL_RE)}"
+    if d.modality not in MODALITY_VALUES:
+        return f"requirement {n}: modality {d.modality!r} is not one of {', '.join(MODALITY_VALUES)}"
     if not MODAL_RE[d.modality].search(q):
         return f"requirement {n}: modality {d.modality!r} does not appear in source_quote {d.source_quote!r}"
     return None

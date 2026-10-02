@@ -8,6 +8,7 @@ is kept as written so the per-draft check can reject just that draft. Scalars an
 likewise coerced where a text or a list of text is wanted. The persisted types re-declare the strict
 fields, so the emitted plan still carries canonical values only.
 """
+import json
 import re
 from typing import Any, Literal, get_args
 
@@ -59,7 +60,15 @@ def _words(raw: Any) -> list[str]:
     return re.findall(r"[a-z]+", str(raw).lower())
 
 
+def _negated(words: list[str]) -> bool:
+    return "not" in words or "never" in words
+
+
 def _match(words: list[str], table: dict[str, str]) -> str | None:
+    """A negated value states the opposite of what it names; nothing downstream re-grounds these
+    vocabularies, so refuse to guess and let the per-draft check ask for it again."""
+    if _negated(words):
+        return None
     for w in words:
         if w in table:
             return table[w]
@@ -69,9 +78,10 @@ def _match(words: list[str], table: dict[str, str]) -> str | None:
 
 
 def normalise_modality(raw: Any) -> str | None:
-    """Canonical modality, or None when the value states no recognisable obligation."""
+    """Canonical modality, or None when the value states no recognisable obligation. Negation is part
+    of the vocabulary here, and `check_draft` re-grounds the result against the quoted sentence."""
     words = _words(raw)
-    negated = "not" in words or "never" in words
+    negated = _negated(words)
     if "shall" in words or "must" in words:
         return "shall_not" if negated else "shall"
     if "should" in words:
@@ -94,20 +104,29 @@ def normalise_presence(raw: Any) -> str | None:
     hit = _match(words, PRESENCE_WORDS)
     if hit:
         return hit
-    for w in words:
-        if len(w) <= 2 and w[0] in PRESENCE_LETTERS:
-            return PRESENCE_LETTERS[w[0]]
+    if len(words) == 1 and len(words[0]) <= 2 and words[0][0] in PRESENCE_LETTERS:
+        return PRESENCE_LETTERS[words[0][0]]
     return None
 
 
-def _canonical(raw: Any, normalise) -> str:
-    """The canonical value, or the value as written so the per-draft check can name it."""
+def _canonical(raw: Any, normalise, default: str = "") -> str:
+    """The canonical value; `default` when the field was left unset, else the value as written so the
+    per-draft check can name it."""
+    if raw is None:
+        return default
     return normalise(raw) or (raw if isinstance(raw, str) else str(raw))
 
 
 def as_str(v: Any) -> str:
-    """A required text field: a scalar becomes text, a missing value becomes empty for the check to report."""
-    return "" if v is None else (v if isinstance(v, str) else str(v)).strip()
+    """Text for a field a reply may fill with something else: a number becomes its digits, a structure
+    keeps its content as JSON, and a missing value or a bare flag becomes empty for the check to report."""
+    if v is None or isinstance(v, bool):
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (int, float)):
+        return str(v)
+    return json.dumps(v, ensure_ascii=False)
 
 
 def as_text(v: Any) -> str | None:
@@ -203,12 +222,12 @@ class TestObjectDraft(BaseModel):
     @field_validator("direction", mode="before")
     @classmethod
     def _direction(cls, v: Any) -> str:
-        return _canonical(v, normalise_direction)
+        return _canonical(v, normalise_direction, "internal")
 
     @field_validator("presence", mode="before")
     @classmethod
     def _presence(cls, v: Any) -> str:
-        return _canonical(v, normalise_presence)
+        return _canonical(v, normalise_presence, "unspecified")
 
 
 class TestObject(TestObjectDraft):

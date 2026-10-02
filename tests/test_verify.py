@@ -38,3 +38,8 @@ def test_negative_items_need_a_rejection_style_expected_result():
 
 def test_boundary_items_are_not_negative():
     assert check_test_case(item("boundary_max", "boundary"), draft(expected="Accepted at exactly 64 characters")) == []
+
+
+def test_empty_objective_is_reported():
+    d = TestCaseDraft.model_validate({"objective": None, "steps": ["s"], "expected_result": "r", "pass_criteria": "p"})
+    assert any("objective" in m for m in check_test_case(item(), d))

@@ -17,6 +17,8 @@ def required_assignments(conditions: list[str]) -> list[dict[str, bool]]:
 
 def check_test_case(item: CoverageItem, d: TestCaseDraft) -> list[str]:
     msgs: list[str] = []
+    if not d.objective.strip():
+        msgs.append("objective is empty")
     if not [s for s in d.steps if s.strip()]:
         msgs.append("steps are empty")
     if not d.expected_result.strip():
