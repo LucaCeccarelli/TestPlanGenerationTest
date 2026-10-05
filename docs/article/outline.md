@@ -1,0 +1,242 @@
+# Article outline: from an agentic RAG pipeline to a deterministic test-model generator
+
+Working notes, not prose. Four sections, each with what changed, why, the sources behind the
+decision, and the numbers. Sources are tagged `[Sn]` and listed at the end.
+
+---
+
+## 1. Initial state
+
+**What it was.** Three decoupled axes over ISO/IEC DIS 18013-5, producing an ISO/IEC/IEEE 29119-3
+JSON test plan. Axis A extraction and indexing, Axis B a three-agent generation chain, Axis C an
+LLM auditor.
+
+- Stack: `pdfplumber`, spaCy, `RecursiveCharacterTextSplitter`, `OllamaEmbeddings` + FAISS,
+  `ChatOllama` (llama3.2, `num_ctx=4096`), `deepagents`, pydantic, `guardrails-ai`, BERTScore.
+- Axis B chain: Analyst, then RAG Router, then Designer. One pass per normative chunk, no shared
+  state. Axis C: structural guardrails plus an Auditor agent whose verdict is overridden by a
+  deterministic Python rule.
+- Research gap claimed, and still valid: the literature derives test cases from user stories, SRS
+  documents or existing source code; nothing generates a 29119-3 plan from a normative standard
+  upstream of any implementation.
+
+**Baseline metrics.**
+
+| | |
+|---|---|
+| Source files / lines | 28 / 2,678 |
+| Tests | 23, all external calls mocked |
+| Chunks produced | 843, then 1,175, then 1,202 across runs; 466 normative in the indexed run |
+| FAISS index | 3.5 MB plus 583 KB docstore |
+| Test plans produced | **0** (no Ollama runtime during the documented runs) |
+
+**Nine known limitations** recorded at the time: flat single-pass chunking that splits clauses,
+dense-only retrieval, no cross-reference or defined-term awareness, independent per-chunk
+generation, non-reflective retry, no generation-time quality gate, LLM-only hallucination
+detection, a manual adversarial protocol, and no ground truth for Axis A.
+
+**Framing for the article.** The baseline is a conventional 2024-style agentic RAG design: embed
+everything, retrieve, let agents reason. Every later decision is a reaction to measuring it.
+
+---
+
+## 2. First iteration: nine improvements from the state of the art
+
+Nine propositions, each written as gap, evidence, concrete change. Eight search queries across
+arXiv, Semantic Scholar and CrossRef; 25 references.
+
+| # | Change | Why, from the literature |
+|---|---|---|
+| A1 | Structure-aware two-pass chunking | clause-atomicity; semantic and adaptive chunking `[S13-S16]` |
+| A2 | Hybrid dense plus sparse retrieval, BM25 and RRF | Blended RAG `[S7]`, FAIR-RAG `[S8]` |
+| A3 | Cross-reference resolution, defined-terms injection | AgenticIE on regulatory documents `[S12]` |
+| B1 | Planner agent for deduplication and feature-set skeleton | multi-agent LLM testing `[S18-S20]` |
+| B2 | Schema-constrained generation with error-reflective retry | LLM test generation from SRS `[S2,S3]`, APITestGenie `[S25]` |
+| B3 | BERTScore self-evaluation gate | hallucination detection `[S9-S11]` |
+| C1 | Embedding-distance pre-audit | probabilistic-distance hallucination detection `[S10]` |
+| C2 | Adversarial protocol as a reproducible pytest suite | reproducibility of the detection-rate metric |
+| X | TraceLLM-style traceability enrichment | TraceLLM `[S6]`, NLP for traceability `[S22]` |
+
+All nine were implemented. **This is the part of the story that matters: implementing the state of
+the art on an unmeasured foundation produced no measurable gain.**
+
+---
+
+## 3. The measured diagnosis that forced a rebuild
+
+A second review started from measurement instead of literature. One defect disabled four of the
+nine improvements, silently.
+
+| Measurement, 1,202-chunk run | Value | Consequence |
+|---|---|---|
+| Distinct section labels | 25 | a 126-page standard with about 200 headings |
+| Chunks labelled `1.2.840.10045.4.3.4` | 645 (54 %) | the heading regex matches ASN.1 OIDs in annexes |
+| Chunks labelled `8.1.2.2` | 327 (27 %) | no heading detected for 40 pages |
+| Normative chunks that are a full clause | **1 / 466** | A1 inactive |
+| Chunks with defined terms | **0 / 1,202** | A3 inactive |
+| Cross-references resolved | 22, all pointing at OIDs | A3 inactive |
+| Planner clusters | 5, named `Section_810` | B1 meaningless |
+| `tc_id` uniqueness | collisions | traceability broken |
+| `deepagents` wrapper | +1,900 tokens, 8 stray tools | harmful |
+| BERTScore gate | never ran | needs a model download |
+
+**Extraction back-ends compared on three standards** (ISO DIS 18013-5, RFC 8949, OpenID4VP 1.0):
+
+| Back-end | ISO headings | Ligatures | Outline and font data | Time |
+|---|---|---|---|---|
+| pdfplumber (current) | 0.89 with a tolerant regex, 28 % padding | broken | no | 60 s |
+| MarkItDown | **0 headings**, plain text | broken | no | 47 s |
+| PyMuPDF | 47/47 bookmark entries | **intact** | yes | **5 s** |
+
+Conclusion drawn, and the article's hinge: a Markdown converter is only as good as the structure it
+can infer, and for born-digital PDFs that structure must come from bookmarks, font size and line
+geometry `[S27,S28]`; model-based converters `[S23-S26]` win only on scanned or complex layouts.
+
+**Why rebuild rather than patch.** Two independent reasons:
+
+1. The sophistication was inert. Retrieval, agents and gates sat on top of a document model that
+   did not know where clauses began.
+2. The target's shape was wrong. The official conformance suite for this standard is an enumeration
+   of objects times a fixed check ladder, not one test per prose chunk. Per-chunk generation cannot
+   reach that granularity however good the agents are.
+
+---
+
+## 4. The radical change: a deterministic pipeline with an explicit test model
+
+**New design, four stages, no framework, no vector store, no agents.**
+
+```
+ingest (rule-based, layout only)
+  -> extract requirements (regex candidates, then one LLM call per clause chunk)
+  -> extract objects: the test model (one LLM call per clause chunk)
+  -> derive coverage items (deterministic, no LLM)
+  -> generate one test case per coverage item
+  -> rule-based verification, bounded retry, explicit gaps
+```
+
+**Where each decision came from.**
+
+| Decision | Source |
+|---|---|
+| An explicit intermediate model, then derive tests from it without further LLM reasoning | AUTOSPEC `[S30]`: protocol elements to an I/O grammar, 92.8 % client message types recovered on five RFCs |
+| A domain meta-model plus testability constraints injected into generation | RAFT `[S31]` |
+| Systematic enumeration by the tool, LLM writes only the prose | iPanda `[S21]`, 4.7 to 10.8 times better pass@1 than a pure-LLM baseline |
+| Hierarchical document understanding before generation | NeTestLLM `[S32]`, 4,632 tests, 41 historical bugs versus 11 for the national suite |
+| Test model, coverage items, equivalence partitioning, boundary analysis as the naming and the ladder | ISO/IEC/IEEE 29119-4 `[S29]` |
+| A fixed pipeline instead of autonomous agents | Agentless `[S33]`: a three-phase pipeline beat every open-source agent on SWE-bench Lite at a fraction of the cost |
+| Small models are weak tool users, so no tool-calling control flow | `[S34]` |
+| Rule-based verification stage rather than an LLM critic | RAITG `[S35]`: verification raised the pass rate from 73.9 % to 95.9 %; reviewer-capability study `[S36]`: same-model self-review gave no gain and 35 % false rejections |
+| Annotation then conversion for extraction, with a verbatim quote per requirement | Li et al. `[S37]`: +29.2 % correctly extracted specifications, and the two failure modes are oversimplification and fabrication |
+| Minimal condition-combination set for conditional requirements | CiRA `[S9]` |
+| Three-attempt retry budget, one requirement per prompt | APITestGenie `[S25]` |
+| Table rows as requirement units | the V2 proposition, plus table-representation studies on 3GPP specifications `[S38]` and layout-aware tabular extraction `[S39]` |
+| PyMuPDF as the extraction back-end | the measurement above, plus the parser comparison `[S27]` |
+
+**What the tool deliberately does not do:** no embeddings, no retrieval, no agent framework, no
+executable test code, no plan-level prose. Every rule is about layout, numbering, typography or
+generic English, never about a document family.
+
+**Intermediate result, sentence-level only, before the test model existed:**
+
+| | |
+|---|---|
+| Requirements / test cases | 215 / 428 |
+| Coverage of the official suite | 29 of 687 = **4.2 %** |
+| Generated cases grounded / actionable / correct, of 60 | 52 / 50 / 51 |
+
+Diagnosis of that 4.2 %: whole-batch rejection at extraction discarded about 200 drafts including
+the most-tested clauses, the ingest lost half the clause structure on this document, and the
+granularity mismatch remained.
+
+---
+
+## 5. Latest upgrades and results
+
+**The ground truth.** The three appendices of ISO/IEC TS 18013-6:2025 parsed by rule into
+structured test cases: **907** official test cases, **687** citing an 18013-5 clause, across 54
+distinct clauses and 118 test families, 7.7 tests per family. Their check distribution is the
+evidence for the coverage ladder:
+
+| Check the official test performs | Count |
+|---|---|
+| presence or absence | 455 |
+| type or encoding well-formedness | 257 |
+| value domain | 97 |
+| behaviour or protocol flow | 44 |
+| size or boundary | 8 |
+
+**Upgrades in this iteration.**
+
+- Ingest: table rows kept as `Header: cell | Header: cell` records; repeated page furniture removed
+  by recurrence; heading plausibility by numbering sequence; annex and appendix markers.
+  Clauses recovered 117 to **265**; largest clause 122 KB to **16 KB**.
+- Extraction: per-draft acceptance instead of whole-batch rejection; `should_not` added; long
+  clauses chunked.
+- New stages: the test model, and deterministic coverage-item derivation.
+- Generation: one call per coverage item; the tool sets the kind, never the model.
+- Vocabulary leniency: strict enums in a batch schema meant one bad value rejected an entire reply.
+  Relevant literature on constrained decoding and schema wording `[S40-S42]`. The emitted JSON
+  schema still advertises the vocabulary, so a server that enforces it still constrains generation.
+- Operational: a request timeout, after one run hung for over 90 minutes on a single call.
+
+**Measured, same model (`gemma4:31b`), local Ollama, 12.7 h, about 10.7 s per call:**
+
+| | before | after | change |
+|---|---|---|---|
+| Requirements | 215 | 842 | 3.9x |
+| Objects in the test model | 0 | 921 | new |
+| Coverage items | 0 | 3,257 | new |
+| Test cases | 428 | 3,231 | 7.5x |
+| Items that produced a case | n/a | 3,231 of 3,257 (99.2 %) | |
+| Gaps | 14 | 66 | |
+| **Coverage of the official suite** | **4.2 %** | **13.8 %** | **3.3x** |
+| Grounded / actionable / correct, of 60 | 52 / 50 / 51 | 56 / 50 / 54 | |
+
+Per-clause, best is 25.4 % on the device-engagement clause; the clauses that scored zero before now
+score 12 to 14 %.
+
+**What still limits it, measured not guessed.**
+
+- Twelve of sixteen model-stage gaps are a truncated reply, three attempts each, on the largest
+  prompts. Clean clauses have a median largest chunk of 826 characters; nine of the twelve failures
+  exceed 6,000. Those twelve clauses hold **361 table rows and produced 4 objects**, and they are
+  the data-element table and the certificate-profile tables, exactly where the official suite
+  concentrates. Fix: a smaller chunk limit for the model stage, and confirm the server context.
+- Actionability did not improve, 50 of 60, and is now the quality ceiling: vague steps, not wrong
+  tests.
+- The fixture is the 2020 draft; the official tests cite the 2021 edition. A confound to state.
+
+**Engineering analytics worth a line.** Tests 23 mocked to **134** with a fake only at the model
+boundary; dependencies from LangChain, FAISS, deepagents, guardrails, BERTScore down to five
+(`pydantic`, `ollama`, `pymupdf`, `python-docx`, `pyyaml`).
+
+---
+
+## Sources
+
+Reuse the numbering from the two review documents where possible.
+
+- `[S2]` Krishna et al., LLMs in SRS, arXiv:2404.17842. `[S3]` Korraprolu et al., ISEC 2025,
+  10.1145/3717383.3717389. `[S6]` Alturayeif et al., TraceLLM, arXiv:2602.01253.
+  `[S7]` Sawarkar et al., Blended RAG, MIPR 2024. `[S8]` FAIR-RAG, arXiv:2510.22344.
+  `[S9]` Frattini et al., CiRA, REW 2023, 10.1109/REW57809.2023.00019.
+  `[S10]` Oblovatny et al., arXiv:2506.09886. `[S11]` Sun et al., AAAI 2026, arXiv:2603.22812.
+  `[S12]` Colakoglu et al., AgenticIE, arXiv:2509.11773. `[S13-S16]` adaptive, max-min and
+  LumberChunker chunking. `[S18-S20]` AutoMT, multi-agent committees, ALMAS.
+  `[S21]` Sun et al., iPanda, arXiv:2507.00378. `[S22]` Guo et al., arXiv:2405.10845.
+  `[S23-S26]` Docling, MinerU, OmniDocBench. `[S25]` APITestGenie, arXiv:2409.03838.
+  `[S27]` Adhikari and Agarwal, arXiv:2410.09871. `[S28]` MinerU-Popo, arXiv:2605.24973.
+- New in this project: `[S29]` ISO/IEC/IEEE 29119-4:2021. `[S30]` AUTOSPEC, arXiv:2511.17977.
+  `[S31]` RAFT, arXiv:2601.09762. `[S32]` NeTestLLM, arXiv:2510.13248.
+  `[S33]` Agentless, ACM TOSEM 2025, 10.1145/3715754. `[S34]` Shen et al., arXiv:2401.07324.
+  `[S35]` RAITG, 10.21203/rs.3.rs-10060668/v1. `[S36]` Tanveer, arXiv:2609.04270.
+  `[S37]` Li et al., arXiv:2504.01294. `[S38]` Roychowdhury et al., 3GPP table representations.
+  `[S39]` Al Hilmi et al., layout-aware tabular extraction. `[S40]` Lu et al., arXiv:2502.18878.
+  `[S41]` Matveev, arXiv:2603.03306. `[S42]` Le, arXiv:2604.14862.
+  `[S43]` ISO/IEC/IEEE 29119-3:2021. `[S44]` ISO/IEC TS 18013-6:2025, the ground truth.
+
+**Caveat for the methods section.** The paper-search MCP server stopped returning results partway
+through; `[S29-S37]` were located by web search and read from arXiv. Coverage and precision are
+judged by the same model family that generates, which is a known bias `[S19,S20]` and should be
+stated as a limitation.
