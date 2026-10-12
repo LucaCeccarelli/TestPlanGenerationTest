@@ -2,7 +2,7 @@ from typing import get_args
 
 import pytest
 
-from tpg.derive import GROUP, derive, derive_object, derive_requirement, group_for
+from tpg.derive import GROUP, derive, derive_object, derive_requirement, group_for, group_key
 from tpg.ics import build_ics
 from tpg.models import Check, Direction, Kind, Requirement, TestObject
 
@@ -274,12 +274,12 @@ def test_inopportune_items_come_after_the_ladders():
 
 # --- D25 deflation ---
 
-def test_recurring_object_name_keeps_one_ladder_and_references_it_elsewhere():
-    rich = obj(id="OBJ-5.4-1", clause_id="5.4", name="Device Engagement", kind="structure", direction="received",
-               presence="mandatory", type="map", value_domain="one of a, b")
-    lean = obj(id="OBJ-7.1-1", clause_id="7.1", name="device  engagement", kind="structure", direction="received",
-               presence="optional")
-    objs = [rich, lean]
+def test_recurring_declaration_keeps_one_ladder_and_references_it_elsewhere():
+    shared = dict(kind="structure", direction="received", presence="mandatory", type="map",
+                  value_domain="one of a, b")
+    rich = obj(id="OBJ-5.4-1", clause_id="5.4", name="Device Engagement", **shared)
+    other = obj(id="OBJ-7.1-1", clause_id="7.1", name="device  engagement", **shared)
+    objs = [rich, other]
     items = derive([], objs, build_ics([], objs))
     assert [i.id for i in items if i.source_id == "OBJ-5.4-1"] == [i.id for i in derive([], objs, build_ics([], objs), deflate=False)
                                                                    if i.source_id == "OBJ-5.4-1"]
@@ -290,13 +290,15 @@ def test_recurring_object_name_keeps_one_ladder_and_references_it_elsewhere():
     assert ref[0].purpose == "Perform the test purposes of device  engagement specified for clause 5.4"
 
 
-def test_the_richest_occurrence_owns_the_group_not_the_first():
+def test_occurrences_of_one_name_with_different_obligations_are_not_one_group():
+    """D31: the lean occurrence declares less, so it is a declaration of its own, not a use site."""
     lean = obj(id="OBJ-5.4-1", clause_id="5.4", name="nonce", presence="optional", direction="received")
     rich = obj(id="OBJ-7.1-1", clause_id="7.1", name="nonce", presence="mandatory", direction="received",
                type="text string", value_domain="one of a, b")
     objs = [lean, rich]
     items = derive([], objs, build_ics([], objs))
-    assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["reference"]
+    assert [i for i in items if i.check == "reference"] == []
+    assert len([i for i in items if i.source_id == "OBJ-5.4-1"]) > 1
     assert len([i for i in items if i.source_id == "OBJ-7.1-1"]) > 1
 
 
@@ -307,9 +309,9 @@ def test_a_name_in_one_clause_only_is_not_grouped():
 
 
 def test_requirement_item_is_dropped_only_for_the_checks_the_object_covers():
-    o = obj(presence="mandatory", direction="received", type="text string")
-    r = req(id="REQ-5.4-1", clause_id="5.4", modality="shall",
-            text="The reader shall reject a request whose nonce is absent for more than 2 seconds.")
+    prose = "The reader shall reject a request whose nonce is absent for more than 2 seconds."
+    o = obj(presence="mandatory", direction="received", type="text string", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", modality="shall", text=prose)
     items = derive([r], [o], build_ics([r], [o]))
     assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "boundary"]
     assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["capability", "presence", "absence",
@@ -324,52 +326,44 @@ def test_requirement_naming_no_object_keeps_every_item():
 
 
 def test_an_object_in_another_clause_does_not_drop_the_requirement_item():
-    o = obj(id="OBJ-9.9-1", clause_id="9.9", presence="mandatory", direction="received")
-    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing.")
+    prose = "The reader shall reject a request whose nonce is missing."
+    o = obj(id="OBJ-9.9-1", clause_id="9.9", presence="mandatory", direction="received", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
     items = derive([r], [o], build_ics([r], [o]))
     assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
 
 
-def test_object_names_shorter_than_three_characters_are_not_matched():
-    short = obj(id="OBJ-5.4-2", name="id", presence="mandatory", direction="received")
-    long = obj(id="OBJ-5.4-3", name="uid", presence="mandatory", direction="received")
-    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall echo the id.")
-    assert [i.check for i in derive([r], [short], build_ics([r], [short])) if i.source_id == "REQ-5.4-1"] == [
-        "capability", "nominal", "negative"]
-    r2 = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall echo the uid.")
-    assert [i.check for i in derive([r2], [long], build_ics([r2], [long])) if i.source_id == "REQ-5.4-1"] == ["capability"]
-
-
-def test_object_name_matches_only_on_a_word_boundary():
-    o = obj(presence="mandatory", direction="received")
-    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall validate the nonces of the session.")
-    assert [i.check for i in derive([r], [o], build_ics([r], [o])) if i.source_id == "REQ-5.4-1"] == [
-        "capability", "nominal", "negative"]
-
-
 def test_generic_grouping_runs_before_the_overlap_rule():
-    """At a reference site the object ladder is gone, so the requirement that names it keeps its items."""
-    rich = obj(id="OBJ-5.4-1", clause_id="5.4", presence="mandatory", direction="received", type="text string")
-    lean = obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")
-    r = req(id="REQ-7.1-1", clause_id="7.1", text="The reader shall reject a request whose nonce is missing.")
-    items = derive([r], [rich, lean], build_ics([r], [rich, lean]))
+    """At a reference site the object ladder is gone, so the requirement read off the same prose keeps its
+    items: nothing is left standing that carries them."""
+    prose = "The reader shall reject a request whose nonce is missing."
+    shared = dict(name="nonce", presence="mandatory", direction="received", type="text string",
+                  source_quote=prose)
+    owner = obj(id="OBJ-5.4-1", clause_id="5.4", **shared)
+    site = obj(id="OBJ-7.1-1", clause_id="7.1", **shared)
+    r = req(id="REQ-7.1-1", clause_id="7.1", text=prose)
+    items = derive([r], [owner, site], build_ics([r], [owner, site]))
     assert [i.check for i in items if i.source_id == "REQ-7.1-1"] == ["capability", "nominal", "negative"]
     assert [i.check for i in items if i.source_id == "OBJ-7.1-1"] == ["reference"]
 
 
 def test_deflate_false_leaves_every_item_in_place():
-    objs = [obj(presence="mandatory", direction="received", type="text string"),
-            obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")]
-    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing.")]
+    prose = "The reader shall reject a request whose nonce is missing."
+    shared = dict(name="nonce", presence="mandatory", direction="received", type="text string",
+                  source_quote=prose)
+    objs = [obj(id="OBJ-5.4-1", clause_id="5.4", **shared), obj(id="OBJ-7.1-1", clause_id="7.1", **shared)]
+    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text=prose)]
     ics = build_ics(reqs, objs)
-    assert len(derive(reqs, objs, ics, deflate=False)) == 11
+    assert len(derive(reqs, objs, ics, deflate=False)) == 13
     assert len(derive(reqs, objs, ics)) == 7
 
 
 def test_deflation_never_changes_the_id_of_a_surviving_item():
-    objs = [obj(presence="mandatory", direction="received", type="text string"),
-            obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")]
-    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing."),
+    prose = "The reader shall reject a request whose nonce is missing."
+    shared = dict(name="nonce", presence="mandatory", direction="received", type="text string",
+                  source_quote=prose)
+    objs = [obj(id="OBJ-5.4-1", clause_id="5.4", **shared), obj(id="OBJ-7.1-1", clause_id="7.1", **shared)]
+    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text=prose),
             req(id="REQ-7.1-1", clause_id="7.1", text="The reader shall respond within 500 ms.")]
     ics = build_ics(reqs, objs)
     before = {i.id: i for i in derive(reqs, objs, ics, deflate=False)}
@@ -377,3 +371,207 @@ def test_deflation_never_changes_the_id_of_a_surviving_item():
         if i.check == "reference":
             continue
         assert i.id in before and before[i.id] == i, i.id
+
+
+# --- D31: a generic group is a shared specification, not a shared name ---
+
+def grouped(objs, reqs=()):
+    reqs = list(reqs)
+    return derive(reqs, objs, build_ics(reqs, objs))
+
+
+def test_a_mandatory_occurrence_is_never_deflated_into_an_optional_ladder():
+    """The Critical of the task 4 review: keyed on the bare name, the mandatory site kept one pointer at
+    a ladder whose purposes say the element may be absent."""
+    optional = obj(id="OBJ-5.4-1", clause_id="5.4", name="docType", presence="optional", direction="received",
+                   type="tstr")
+    mandatory = obj(id="OBJ-7.1-1", clause_id="7.1", name="docType", presence="mandatory", direction="received",
+                    type="tstr")
+    items = grouped([optional, mandatory])
+    assert [i for i in items if i.check == "reference"] == []
+    assert [i.check for i in items if i.source_id == "OBJ-7.1-1"] == ["capability", "presence", "absence",
+                                                                      "encoding_valid", "encoding_invalid"]
+
+
+@pytest.mark.parametrize("differs", [
+    dict(presence="optional"), dict(direction="produced"), dict(type="uint"), dict(value_domain="one of a, b"),
+    dict(size="8 bytes"), dict(kind="message"), dict(condition="the reader asked for it"),
+    dict(relations=["it equals the request nonce"]), dict(applies_when=["the session is established"]),
+])
+def test_occurrences_differing_on_one_keyed_attribute_each_keep_their_ladder(differs):
+    base = dict(name="nonce", kind="structure", direction="received", presence="conditional",
+                condition="the reader requested it", type="tstr", value_domain="lower case",
+                size="16 to 32 bytes", relations=["it is fresh"], applies_when=["the session is open"])
+    a = obj(id="OBJ-5.4-1", clause_id="5.4", **base)
+    b = obj(id="OBJ-7.1-1", clause_id="7.1", **{**base, **differs})
+    items = grouped([a, b])
+    assert [i for i in items if i.check == "reference"] == [], differs
+
+
+def test_occurrences_sharing_every_keyed_attribute_form_one_group():
+    base = dict(kind="structure", direction="received", presence="mandatory", type="map",
+                value_domain="one of a, b", size="2 items", relations=["it is fresh"])
+    owner = obj(id="OBJ-5.4-1", clause_id="5.4", name="Device Engagement", **base)
+    site = obj(id="OBJ-7.1-1", clause_id="7.1", name="device  ENGAGEMENT", **base)
+    items = grouped([owner, site])
+    ref = [i for i in items if i.source_id == "OBJ-7.1-1"]
+    assert [(i.id, i.check, i.generic_group) for i in ref] == [
+        ("CI-OBJ-7.1-1-reference", "reference", "device engagement")]
+    assert ref[0].purpose == "Perform the test purposes of device  ENGAGEMENT specified for clause 5.4"
+    assert len([i for i in items if i.source_id == "OBJ-5.4-1"]) > 1
+
+
+def test_the_owning_occurrence_is_the_richest_then_document_order():
+    base = dict(name="nonce", presence="mandatory", direction="received", type="tstr")
+    first = obj(id="OBJ-5.4-1", clause_id="5.4", **base)
+    second = obj(id="OBJ-7.1-1", clause_id="7.1", **base)
+    third = obj(id="OBJ-9.9-1", clause_id="9.9", **base)
+    items = grouped([second, first, third])
+    assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["reference"]
+    assert [i.check for i in items if i.source_id == "OBJ-9.9-1"] == ["reference"]
+    assert len([i for i in items if i.source_id == "OBJ-7.1-1"]) > 1
+    assert {i.purpose for i in items if i.check == "reference"} == {
+        "Perform the test purposes of nonce specified for clause 7.1"}
+
+
+def test_two_shallow_occurrences_of_one_clause_do_not_outrank_a_rich_declaration():
+    """Important 3: ownership was the per-clause sum, so clause 7.1 owned a ladder it does not contain."""
+    rich = obj(id="OBJ-5.4-1", clause_id="5.4", presence="mandatory", type="tstr", relations=["it is fresh"])
+    lean = obj(id="OBJ-7.1-1", clause_id="7.1", presence="mandatory")
+    lean2 = obj(id="OBJ-7.1-2", clause_id="7.1", presence="optional")
+    items = grouped([rich, lean, lean2])
+    assert [i for i in items if i.check == "reference"] == []
+    assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["capability", "presence", "absence",
+                                                                      "encoding_valid", "encoding_invalid",
+                                                                      "consistency"]
+
+
+def test_each_referring_occurrence_of_one_clause_keeps_its_own_pointer():
+    base = dict(name="nonce", presence="mandatory", direction="received")
+    owner = obj(id="OBJ-5.4-1", clause_id="5.4", **base)
+    site1 = obj(id="OBJ-7.1-1", clause_id="7.1", **base)
+    site2 = obj(id="OBJ-7.1-2", clause_id="7.1", **base)
+    items = grouped([owner, site1, site2])
+    refs = [i for i in items if i.check == "reference"]
+    assert [i.id for i in refs] == ["CI-OBJ-7.1-1-reference", "CI-OBJ-7.1-2-reference"]
+
+
+def test_a_sibling_of_the_owner_in_the_owning_clause_keeps_its_ladder():
+    base = dict(name="nonce", presence="mandatory", direction="received")
+    owner = obj(id="OBJ-5.4-1", clause_id="5.4", **base)
+    sibling = obj(id="OBJ-5.4-2", clause_id="5.4", **base)
+    site = obj(id="OBJ-7.1-1", clause_id="7.1", **base)
+    items = grouped([owner, sibling, site])
+    assert [i.check for i in items if i.source_id == "OBJ-5.4-2"] != ["reference"]
+    assert [i.check for i in items if i.source_id == "OBJ-7.1-1"] == ["reference"]
+
+
+# --- D31: rule (b) compares provenance, not the occurrence of a name ---
+
+def test_an_unrelated_limit_on_the_object_does_not_delete_a_limit_stated_in_prose():
+    """Important 1: a size declared on `nonce` deleted a requirement stating a 500 ms timing limit."""
+    o = obj(presence="mandatory", direction="received", size="16 to 32 bytes",
+            source_quote="nonce: bstr .size (16..32)")
+    r = req(id="REQ-5.4-1", clause_id="5.4",
+            text="The reader shall respond to a request carrying a nonce within 500 ms.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative",
+                                                                      "boundary"]
+
+
+def test_a_name_occurring_as_an_ordinary_word_does_not_delete_a_requirement_item():
+    o = obj(id="OBJ-5.4-1", clause_id="5.4", name="set", presence="mandatory", direction="received", type="uint",
+            source_quote="set: uint")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall set the error flag when verification fails.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
+
+
+def test_a_requirement_and_an_object_read_off_the_same_prose_are_one_test():
+    prose = "The nonce shall be a text string of 16 to 32 bytes."
+    o = obj(presence="mandatory", direction="received", type="text string", size="16 to 32 bytes",
+            source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability"]
+
+
+def test_a_quote_that_is_a_clause_of_the_requirement_sentence_counts_as_the_same_prose():
+    """The chosen provenance test is containment in either direction, so an extractor that stored only
+    the obligation clause of a longer sentence still counts as the same prose."""
+    o = obj(presence="mandatory", direction="received", source_quote="the nonce shall be present")
+    r = req(id="REQ-5.4-1", clause_id="5.4",
+            text="When the session is established the nonce shall be present in the request.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability"]
+
+
+def test_the_same_prose_in_another_clause_does_not_drop_the_requirement_item():
+    prose = "The nonce shall be present."
+    o = obj(id="OBJ-9.9-1", clause_id="9.9", presence="mandatory", direction="received", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
+
+
+def test_an_empty_quote_never_counts_as_the_same_prose():
+    o = obj(presence="mandatory", direction="received", source_quote="")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The nonce shall be present.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
+
+
+def test_the_same_prose_drops_only_the_check_families_the_object_covers():
+    prose = "The nonce shall be present within 500 ms."
+    o = obj(presence="mandatory", direction="received", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "boundary"]
+
+
+# --- D21 guarantee, in the fast suite (Important 2) ---
+
+def assert_every_due_ics_item_is_covered(reqs, objs):
+    """D21 and section 4.5: every mandatory or optional ICS item keeps a coverage item, and a `reference`
+    item counts only when the owner it names declares the same specification the site does."""
+    ics = build_ics(reqs, objs)
+    items = derive(reqs, objs, ics)
+    by_source: dict[str, list] = {}
+    for i in items:
+        by_source.setdefault(i.source_id, []).append(i)
+    for entry in ics:
+        if entry.status not in ("mandatory", "optional"):
+            continue
+        mine = by_source.get(entry.source_id, [])
+        assert mine, f"{entry.id} ({entry.status}) has no coverage item"
+        for i in mine:
+            if i.check != "reference":
+                continue
+            site = next(o for o in objs if o.id == i.source_id)
+            owner_clause = i.purpose.rsplit(" ", 1)[-1]
+            owners = [o for o in objs if o.clause_id == owner_clause and group_key(o) == group_key(site)]
+            assert owners, f"{i.id} points at clause {owner_clause}, which declares no equivalent of {site.name}"
+
+
+def test_every_due_ics_item_keeps_a_coverage_item_that_asserts_its_own_obligations():
+    prose = "The nonce shall be present."
+    shared = dict(name="nonce", kind="structure", direction="received", presence="mandatory", type="map")
+    objs = [obj(id="OBJ-5.4-1", clause_id="5.4", **shared), obj(id="OBJ-7.1-1", clause_id="7.1", **shared),
+            obj(id="OBJ-7.1-2", clause_id="7.1", name="nonce", presence="optional", direction="received"),
+            obj(id="OBJ-8.1-1", clause_id="8.1", name="nonce", presence="optional", direction="received"),
+            obj(id="OBJ-9.9-1", clause_id="9.9", name="docType", presence="conditional", condition="asked for"),
+            obj(id="OBJ-9.9-2", clause_id="9.9", name="", presence="mandatory"),
+            obj(id="OBJ-9.9-3", clause_id="9.9", name="version", presence="unspecified"),
+            obj(id="OBJ-9.9-4", clause_id="9.9", name="nonce", presence="mandatory", direction="received",
+                source_quote=prose)]
+    reqs = [req(id="REQ-9.9-1", clause_id="9.9", text=prose), req(id="REQ-5.4-1", clause_id="5.4"),
+            req(id="REQ-7.1-1", clause_id="7.1", text="The reader may log the request.", modality="may")]
+    assert_every_due_ics_item_is_covered(reqs, objs)
+
+
+def test_an_occurrence_with_no_ladder_gets_no_pointer():
+    """An object whose presence the text does not state and which declares nothing has no coverage item
+    and no ICS entry, so there is nothing to replace and nothing left dangling."""
+    base = dict(name="nonce", presence="unspecified")
+    objs = [obj(id="OBJ-5.4-1", clause_id="5.4", **base), obj(id="OBJ-7.1-1", clause_id="7.1", **base)]
+    assert derive([], objs, build_ics([], objs)) == []

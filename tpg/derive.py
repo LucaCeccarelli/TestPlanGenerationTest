@@ -2,7 +2,6 @@
 (ISO/IEC/IEEE 29119-4 test coverage items; test groups from ITU-T X.291 clause 10.2.2)."""
 import re
 from collections import Counter
-from functools import lru_cache
 
 from tpg.extract import norm
 from tpg.models import Check, CoverageItem, Group, ICSItem, Kind, Requirement, TestObject
@@ -25,17 +24,14 @@ GROUP: dict[str, Group] = {
     "inopportune": "inopportune_behaviour",
 }
 
-# Deflation rule (b) of D25: the object checks a requirement-derived check duplicates. A requirement and an
-# object that describe the same obligation yield the same test twice; the object-derived item is the specific
-# one, so it is the one kept.
+# Deflation rule (b) of D25 as amended by D31: the object checks a requirement-derived check duplicates,
+# considered only when the two were read off the same prose. A requirement and an object that describe the
+# same obligation yield the same test twice; the object-derived item is the specific one, so it is kept.
 OVERLAP: dict[str, tuple[Check, ...]] = {
     "nominal": ("presence", "encoding_valid", "value_valid"),
     "negative": ("absence", "encoding_invalid", "value_invalid"),
     "boundary": ("boundary_min", "boundary_max"),
 }
-# Matching a short name inside a sentence is mostly false positives ("id", "of", "a"): a two-letter name
-# occurs as a word in prose that is not about it.
-MIN_NAME = 3
 
 DIRECTION = {"received": "when received by the system under test", "produced": "in what the system under test produces",
              "internal": "in the system under test"}
@@ -146,31 +142,49 @@ def derive_inopportune(obj: TestObject) -> list[CoverageItem]:
                   applies_when=obj.applies_when)]
 
 
-@lru_cache(maxsize=4096)
-def _name_re(name: str) -> re.Pattern[str]:
-    """Word-boundary on both sides, written as lookarounds so a name with punctuation still behaves."""
-    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+def group_key(obj: TestObject) -> tuple:
+    """D31: a generic group is a shared specification, not a shared name. The key is the normalised name
+    together with every attribute the ladder of `derive_object` and `derive_inopportune` reads, so two
+    occurrences of one group state the same test purposes and a `reference` item at either site asserts
+    that site's own obligations. Each text attribute is normalised the way the name is, so that a spelling
+    or spacing difference does not split a genuine group; `kind`, `presence` and `direction` are already
+    controlled vocabularies."""
+    return (norm(obj.name), obj.kind, obj.presence, obj.direction, norm(obj.type or ""),
+            norm(obj.value_domain or ""), norm(obj.size or ""), norm(obj.condition or ""),
+            tuple(norm(r) for r in obj.relations), tuple(norm(a) for a in obj.applies_when))
+
+
+def same_prose(quote: str, text: str) -> bool:
+    """Were an object and a requirement read off the same prose? Both sides normalised, and containment
+    counts in either direction, because an extractor may store the obligation clause of a longer sentence
+    as the quote or quote the whole sentence a shorter requirement text states. An empty side never
+    matches: it would otherwise be contained in everything."""
+    return bool(quote) and bool(text) and (quote in text or text in quote)
 
 
 def group_generics(items: list[CoverageItem], objs: list[TestObject]) -> list[CoverageItem]:
-    """Rule (a) of D25: a structure declared in several clauses is a generic test suite (X.291 clause 11 and
-    Annex D). The clause with the most coverage items owns the ladder; every other site keeps one `reference`
-    item pointing at it, as the official suites do with "perform all Common_X test cases". Keys on the name
-    the document itself writes, so nothing here knows any particular standard."""
-    by_name: dict[str, dict[str, list[TestObject]]] = {}
+    """Rule (a) of D25 as amended by D31: a specification declared in several clauses is a generic test
+    suite (X.291 clause 11 and Annex D). Occurrences are grouped by `group_key`, not by the bare name, so
+    an occurrence that differs on any attribute determining its test purposes is a distinct declaration and
+    keeps its own ladder. The richest occurrence of a group owns the ladder, ties going to document order;
+    every occurrence in another clause keeps one `reference` item pointing at it, as the official suites do
+    with "perform all Common_X test cases". Keys on the text the document itself writes, so nothing here
+    knows any particular standard."""
+    by_key: dict[tuple, list[TestObject]] = {}
     for o in objs:
         if norm(o.name):
-            by_name.setdefault(norm(o.name), {}).setdefault(o.clause_id, []).append(o)
+            by_key.setdefault(group_key(o), []).append(o)
     counts = Counter(i.source_id for i in items)
     referring: dict[str, tuple[str, str, TestObject]] = {}
-    for name, by_clause in by_name.items():
-        if len(by_clause) < 2:
+    for key, group in by_key.items():
+        if len({o.clause_id for o in group}) < 2:
             continue
-        # max() keeps the first of equal counts, and the dict is in document order, so ties go to the first site
-        owner = max(by_clause, key=lambda c: sum(counts[o.id] for o in by_clause[c]))
-        for clause, group in by_clause.items():
-            if clause != owner:
-                referring.update({o.id: (name, owner, o) for o in group})
+        # max() keeps the first of equal counts and `objs` is in document order, so a tie goes to the first
+        # occurrence. Under the D31 key the ladders of one group are identical, so a tie is the normal case.
+        owner = max(group, key=lambda o: counts[o.id])
+        # An occurrence of the owner's own clause keeps its ladder: a pointer naming its own clause tells a
+        # reader nothing, and D25 groups what recurs across clauses.
+        referring.update({o.id: (key[0], owner.clause_id, o) for o in group if o.clause_id != owner.clause_id})
     out: list[CoverageItem] = []
     done: set[str] = set()
     for i in items:
@@ -178,33 +192,39 @@ def group_generics(items: list[CoverageItem], objs: list[TestObject]) -> list[Co
         if ref is None:
             out.append(i)
             continue
-        name, owner, o = ref
+        name, owner_clause, o = ref
         if i.source_id in done:
             continue
+        # One pointer per occurrence, not per clause: an ICS entry is joined to its coverage by the
+        # occurrence's own id, so a second occurrence of the same clause needs its own item (D21).
         done.add(i.source_id)
         out.append(_item(o.id, o.clause_id, "reference", "nominal",
-                         f"Perform the test purposes of {o.name} specified for clause {owner}",
+                         f"Perform the test purposes of {o.name} specified for clause {owner_clause}",
                          applies_when=o.applies_when, generic_group=name))
     return out
 
 
 def drop_overlaps(items: list[CoverageItem], reqs: list[Requirement], objs: list[TestObject]) -> list[CoverageItem]:
-    """Rule (b) of D25: drop a requirement-derived item whose check an object named in the requirement's own
-    text already covers in the same clause. Compared against the items that survived rule (a)."""
-    names = {o.id: norm(o.name) for o in objs}
+    """Rule (b) of D25 as amended by D31: drop a requirement-derived item when an object of the same clause
+    was derived from the same prose and carries a check of the same family. Provenance is the test, not the
+    occurrence of the object's name in the requirement's text: a name is a word of ordinary English as often
+    as it is a reference, and a limit declared on an object is not the limit a sentence states. The check
+    family is still consulted, so an item is dropped only where the object really has a counterpart.
+    Compared against the items that survived rule (a)."""
+    quotes = {o.id: norm(o.source_quote) for o in objs}
     covered: dict[tuple[str, str], set[str]] = {}
     for i in items:
-        name = names.get(i.source_id)
-        if name and len(name) >= MIN_NAME:
-            covered.setdefault((i.clause_id, name), set()).add(i.check)
+        quote = quotes.get(i.source_id)
+        if quote:
+            covered.setdefault((i.clause_id, quote), set()).add(i.check)
     texts = {r.id: norm(r.text) for r in reqs}
 
     def duplicated(i: CoverageItem) -> bool:
         text = texts.get(i.source_id)
         if text is None or i.check not in OVERLAP:
             return False
-        return any(checks.intersection(OVERLAP[i.check]) and _name_re(name).search(text)
-                   for (clause, name), checks in covered.items() if clause == i.clause_id)
+        return any(checks.intersection(OVERLAP[i.check]) and same_prose(quote, text)
+                   for (clause, quote), checks in covered.items() if clause == i.clause_id)
 
     return [i for i in items if not duplicated(i)]
 
