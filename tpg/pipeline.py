@@ -14,7 +14,7 @@ from tpg.models import Source, TestPlan
 
 
 def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempts: int = 3, log=lambda s: None,
-        use_model: bool = True, use_grammar: bool = True) -> TestPlan:
+        use_model: bool = True, use_grammar: bool = True, deflate: bool = True) -> TestPlan:
     clauses = ingest(path)
     log(f"{len(clauses)} clauses")
     if clause_ids:
@@ -32,7 +32,7 @@ def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempt
         objs, model_gaps = [o for c in clauses for o in assemble(c, grammar.get(c.id, []), [])], []
     ics = build_ics(reqs, objs)
     log(f"{len(ics)} ICS items")
-    items = derive(reqs, objs, ics)
+    items = derive(reqs, objs, ics, deflate)
     log(f"{len(items)} coverage items")
     cases, gen_gaps = generate(items, reqs, objs, clauses, llm, attempts, log)
     with open(path, "rb") as f:

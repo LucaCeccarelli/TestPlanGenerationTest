@@ -220,3 +220,110 @@ def test_inopportune_items_come_after_the_ladders():
     objs = [obj(kind="structure", direction="received", condition="the session is open", presence="conditional")]
     items = derive([], objs, build_ics([], objs))
     assert [i.check for i in items][-1] == "inopportune"
+
+
+# --- D25 deflation ---
+
+def test_recurring_object_name_keeps_one_ladder_and_references_it_elsewhere():
+    rich = obj(id="OBJ-5.4-1", clause_id="5.4", name="Device Engagement", kind="structure", direction="received",
+               presence="mandatory", type="map", value_domain="one of a, b")
+    lean = obj(id="OBJ-7.1-1", clause_id="7.1", name="device  engagement", kind="structure", direction="received",
+               presence="optional")
+    objs = [rich, lean]
+    items = derive([], objs, build_ics([], objs))
+    assert [i.id for i in items if i.source_id == "OBJ-5.4-1"] == [i.id for i in derive([], objs, build_ics([], objs), deflate=False)
+                                                                   if i.source_id == "OBJ-5.4-1"]
+    ref = [i for i in items if i.source_id == "OBJ-7.1-1"]
+    assert len(ref) == 1
+    assert (ref[0].id, ref[0].check, ref[0].kind, ref[0].group) == ("CI-OBJ-7.1-1-reference", "reference", "nominal", "valid_behaviour")
+    assert ref[0].clause_id == "7.1" and ref[0].generic_group == "device engagement"
+    assert ref[0].purpose == "Perform the test purposes of device  engagement specified for clause 5.4"
+
+
+def test_the_richest_occurrence_owns_the_group_not_the_first():
+    lean = obj(id="OBJ-5.4-1", clause_id="5.4", name="nonce", presence="optional", direction="received")
+    rich = obj(id="OBJ-7.1-1", clause_id="7.1", name="nonce", presence="mandatory", direction="received",
+               type="text string", value_domain="one of a, b")
+    objs = [lean, rich]
+    items = derive([], objs, build_ics([], objs))
+    assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["reference"]
+    assert len([i for i in items if i.source_id == "OBJ-7.1-1"]) > 1
+
+
+def test_a_name_in_one_clause_only_is_not_grouped():
+    objs = [obj(presence="mandatory", direction="received"), obj(id="OBJ-5.4-2", name="counter", presence="mandatory")]
+    items = derive([], objs, build_ics([], objs))
+    assert [i for i in items if i.check == "reference"] == []
+
+
+def test_requirement_item_is_dropped_only_for_the_checks_the_object_covers():
+    o = obj(presence="mandatory", direction="received", type="text string")
+    r = req(id="REQ-5.4-1", clause_id="5.4", modality="shall",
+            text="The reader shall reject a request whose nonce is absent for more than 2 seconds.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "boundary"]
+    assert [i.check for i in items if i.source_id == "OBJ-5.4-1"] == ["capability", "presence", "absence",
+                                                                      "encoding_valid", "encoding_invalid"]
+
+
+def test_requirement_naming_no_object_keeps_every_item():
+    o = obj(presence="mandatory", direction="received", type="text string")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall respond within 500 ms.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative", "boundary"]
+
+
+def test_an_object_in_another_clause_does_not_drop_the_requirement_item():
+    o = obj(id="OBJ-9.9-1", clause_id="9.9", presence="mandatory", direction="received")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
+
+
+def test_object_names_shorter_than_three_characters_are_not_matched():
+    short = obj(id="OBJ-5.4-2", name="id", presence="mandatory", direction="received")
+    long = obj(id="OBJ-5.4-3", name="uid", presence="mandatory", direction="received")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall echo the id.")
+    assert [i.check for i in derive([r], [short], build_ics([r], [short])) if i.source_id == "REQ-5.4-1"] == [
+        "capability", "nominal", "negative"]
+    r2 = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall echo the uid.")
+    assert [i.check for i in derive([r2], [long], build_ics([r2], [long])) if i.source_id == "REQ-5.4-1"] == ["capability"]
+
+
+def test_object_name_matches_only_on_a_word_boundary():
+    o = obj(presence="mandatory", direction="received")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall validate the nonces of the session.")
+    assert [i.check for i in derive([r], [o], build_ics([r], [o])) if i.source_id == "REQ-5.4-1"] == [
+        "capability", "nominal", "negative"]
+
+
+def test_generic_grouping_runs_before_the_overlap_rule():
+    """At a reference site the object ladder is gone, so the requirement that names it keeps its items."""
+    rich = obj(id="OBJ-5.4-1", clause_id="5.4", presence="mandatory", direction="received", type="text string")
+    lean = obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")
+    r = req(id="REQ-7.1-1", clause_id="7.1", text="The reader shall reject a request whose nonce is missing.")
+    items = derive([r], [rich, lean], build_ics([r], [rich, lean]))
+    assert [i.check for i in items if i.source_id == "REQ-7.1-1"] == ["capability", "nominal", "negative"]
+    assert [i.check for i in items if i.source_id == "OBJ-7.1-1"] == ["reference"]
+
+
+def test_deflate_false_leaves_every_item_in_place():
+    objs = [obj(presence="mandatory", direction="received", type="text string"),
+            obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")]
+    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing.")]
+    ics = build_ics(reqs, objs)
+    assert len(derive(reqs, objs, ics, deflate=False)) == 11
+    assert len(derive(reqs, objs, ics)) == 7
+
+
+def test_deflation_never_changes_the_id_of_a_surviving_item():
+    objs = [obj(presence="mandatory", direction="received", type="text string"),
+            obj(id="OBJ-7.1-1", clause_id="7.1", presence="optional", direction="received")]
+    reqs = [req(id="REQ-5.4-1", clause_id="5.4", text="The reader shall reject a request whose nonce is missing."),
+            req(id="REQ-7.1-1", clause_id="7.1", text="The reader shall respond within 500 ms.")]
+    ics = build_ics(reqs, objs)
+    before = {i.id: i for i in derive(reqs, objs, ics, deflate=False)}
+    for i in derive(reqs, objs, ics):
+        if i.check == "reference":
+            continue
+        assert i.id in before and before[i.id] == i, i.id

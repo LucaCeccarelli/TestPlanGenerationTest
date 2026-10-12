@@ -21,7 +21,7 @@ class StubLLM:
 
 
 def _stub_run(plan):
-    return lambda path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True: plan
+    return lambda path, llm, model, **kw: plan
 
 
 def test_exit_0_and_writes_json(tmp_path, monkeypatch):
@@ -61,7 +61,7 @@ def test_exit_1_when_input_missing(tmp_path, monkeypatch, capsys):
 def test_clauses_flag_is_split_and_passed(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_run(path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True):
+    def fake_run(path, llm, model, clause_ids=None, **kw):
         seen["clause_ids"] = clause_ids
         seen["model"] = model
         return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
@@ -116,7 +116,7 @@ def test_exit_1_when_output_unwritable(tmp_path, monkeypatch, capsys):
 def test_no_model_flag_is_passed(tmp_path, monkeypatch):
     seen = {}
 
-    def fake_run(path, llm, model, clause_ids=None, attempts=3, log=None, use_model=True):
+    def fake_run(path, llm, model, use_model=True, **kw):
         seen["use_model"] = use_model
         return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
 
@@ -124,3 +124,16 @@ def test_no_model_flag_is_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "run", fake_run)
     cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-model"])
     assert seen == {"use_model": False}
+
+
+def test_no_grammar_and_no_deflate_flags_are_passed(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(path, llm, model, **kw):
+        seen.update(kw)
+        return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
+
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    monkeypatch.setattr(cli, "run", fake_run)
+    cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-grammar", "--no-deflate"])
+    assert (seen["use_grammar"], seen["deflate"], seen["use_model"]) == (False, False, True)

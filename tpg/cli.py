@@ -1,4 +1,5 @@
-"""tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2] [--no-model]"""
+"""tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2]
+[--no-model] [--no-grammar] [--no-deflate]"""
 import argparse
 import sys
 
@@ -24,6 +25,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--clauses", help="comma-separated clause ids to restrict the run, e.g. 5.1,5.2")
     g.add_argument("--attempts", type=int, default=3)
     g.add_argument("--no-model", action="store_true", help="skip the test-model stage (sentence-level requirements only)")
+    g.add_argument("--no-grammar", action="store_true", help="skip the grammar stage (no objects from formal declarations)")
+    g.add_argument("--no-deflate", action="store_true", help="keep every coverage item: no generic groups, no overlap removal")
     args = parser.parse_args(argv)
 
     if args.attempts < 1:
@@ -47,7 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     clause_ids = [c.strip() for c in args.clauses.split(",") if c.strip()] if args.clauses else None
     try:
         plan = run(args.standard, llm, args.model, clause_ids=clause_ids, attempts=args.attempts,
-                   log=lambda s: print(s, file=sys.stderr), use_model=not args.no_model)
+                   log=lambda s: print(s, file=sys.stderr), use_model=not args.no_model,
+                   use_grammar=not args.no_grammar, deflate=not args.no_deflate)
     except ValueError as e:
         _err(str(e))
         return 1

@@ -81,3 +81,13 @@ def test_run_clause_filter(fake_llm):
 def test_run_unknown_clause_filter_raises(fake_llm):
     with pytest.raises(ValueError, match="9.9"):
         run(str(FIX / "sample.md"), fake_llm([]), model="fake", clause_ids=["9.9"])
+
+
+def test_run_deflation_drops_the_requirement_items_the_object_already_covers(fake_llm):
+    script = [REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3
+    plan = run(str(FIX / "sample.md"), fake_llm(list(script), fallback=TC), model="fake")
+    kept = run(str(FIX / "sample.md"), fake_llm(list(script), fallback=TC), model="fake", deflate=False)
+    # REQ-5.4-1 names the nonce object of its own clause, which covers both its nominal and its negative check
+    assert [i.check for i in plan.coverage_items if i.source_id == "REQ-5.4-1"] == ["capability"]
+    assert [i.check for i in kept.coverage_items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]
+    assert len(plan.coverage_items) == len(kept.coverage_items) - 2

@@ -1,7 +1,10 @@
 """Coverage items from the ICS proforma, the requirements and the objects. Deterministic, no LLM
 (ISO/IEC/IEEE 29119-4 test coverage items; test groups from ITU-T X.291 clause 10.2.2)."""
 import re
+from collections import Counter
+from functools import lru_cache
 
+from tpg.extract import norm
 from tpg.models import Check, CoverageItem, Group, ICSItem, Kind, Requirement, TestObject
 from tpg.verify import required_assignments
 
@@ -22,6 +25,18 @@ GROUP: dict[str, Group] = {
     "inopportune": "inopportune_behaviour",
 }
 
+# Deflation rule (b) of D25: the object checks a requirement-derived check duplicates. A requirement and an
+# object that describe the same obligation yield the same test twice; the object-derived item is the specific
+# one, so it is the one kept.
+OVERLAP: dict[str, tuple[Check, ...]] = {
+    "nominal": ("presence", "encoding_valid", "value_valid"),
+    "negative": ("absence", "encoding_invalid", "value_invalid"),
+    "boundary": ("boundary_min", "boundary_max"),
+}
+# Matching a short name inside a sentence is mostly false positives ("id", "of", "a"): a two-letter name
+# occurs as a word in prose that is not about it.
+MIN_NAME = 3
+
 DIRECTION = {"received": "when received by the system under test", "produced": "in what the system under test produces",
              "internal": "in the system under test"}
 
@@ -35,11 +50,12 @@ def group_for(check: Check, kind: Kind) -> Group:
 
 
 def _item(source_id: str, clause_id: str, check: Check, kind: Kind, purpose: str, n: int | None = None,
-          assignment: dict[str, bool] | None = None, applies_when: list[str] | None = None) -> CoverageItem:
+          assignment: dict[str, bool] | None = None, applies_when: list[str] | None = None,
+          generic_group: str | None = None) -> CoverageItem:
     cid = f"CI-{source_id}-{check}" + (f"-{n}" if n is not None else "")
     return CoverageItem(id=cid, source_id=source_id, clause_id=clause_id, check=check, kind=kind,
                         group=group_for(check, kind), purpose=purpose, condition_assignment=assignment,
-                        applies_when=list(applies_when or []))
+                        applies_when=list(applies_when or []), generic_group=generic_group)
 
 
 def derive_requirement(req: Requirement) -> list[CoverageItem]:
@@ -127,7 +143,71 @@ def derive_inopportune(obj: TestObject) -> list[CoverageItem]:
                   applies_when=obj.applies_when)]
 
 
-def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem]) -> list[CoverageItem]:
+@lru_cache(maxsize=4096)
+def _name_re(name: str) -> re.Pattern[str]:
+    """Word-boundary on both sides, written as lookarounds so a name with punctuation still behaves."""
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+
+
+def group_generics(items: list[CoverageItem], objs: list[TestObject]) -> list[CoverageItem]:
+    """Rule (a) of D25: a structure declared in several clauses is a generic test suite (X.291 clause 11 and
+    Annex D). The clause with the most coverage items owns the ladder; every other site keeps one `reference`
+    item pointing at it, as the official suites do with "perform all Common_X test cases". Keys on the name
+    the document itself writes, so nothing here knows any particular standard."""
+    by_name: dict[str, dict[str, list[TestObject]]] = {}
+    for o in objs:
+        if norm(o.name):
+            by_name.setdefault(norm(o.name), {}).setdefault(o.clause_id, []).append(o)
+    counts = Counter(i.source_id for i in items)
+    referring: dict[str, tuple[str, str, TestObject]] = {}
+    for name, by_clause in by_name.items():
+        if len(by_clause) < 2:
+            continue
+        # max() keeps the first of equal counts, and the dict is in document order, so ties go to the first site
+        owner = max(by_clause, key=lambda c: sum(counts[o.id] for o in by_clause[c]))
+        for clause, group in by_clause.items():
+            if clause != owner:
+                referring.update({o.id: (name, owner, o) for o in group})
+    out: list[CoverageItem] = []
+    done: set[str] = set()
+    for i in items:
+        ref = referring.get(i.source_id)
+        if ref is None:
+            out.append(i)
+            continue
+        name, owner, o = ref
+        if i.source_id in done:
+            continue
+        done.add(i.source_id)
+        out.append(_item(o.id, o.clause_id, "reference", "nominal",
+                         f"Perform the test purposes of {o.name} specified for clause {owner}",
+                         applies_when=o.applies_when, generic_group=name))
+    return out
+
+
+def drop_overlaps(items: list[CoverageItem], reqs: list[Requirement], objs: list[TestObject]) -> list[CoverageItem]:
+    """Rule (b) of D25: drop a requirement-derived item whose check an object named in the requirement's own
+    text already covers in the same clause. Compared against the items that survived rule (a)."""
+    names = {o.id: norm(o.name) for o in objs}
+    covered: dict[tuple[str, str], set[str]] = {}
+    for i in items:
+        name = names.get(i.source_id)
+        if name and len(name) >= MIN_NAME:
+            covered.setdefault((i.clause_id, name), set()).add(i.check)
+    texts = {r.id: norm(r.text) for r in reqs}
+
+    def duplicated(i: CoverageItem) -> bool:
+        text = texts.get(i.source_id)
+        if text is None or i.check not in OVERLAP:
+            return False
+        return any(checks.intersection(OVERLAP[i.check]) and _name_re(name).search(text)
+                   for (clause, name), checks in covered.items() if clause == i.clause_id)
+
+    return [i for i in items if not duplicated(i)]
+
+
+def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem],
+           deflate: bool = True) -> list[CoverageItem]:
     items: list[CoverageItem] = []
     prohibitions = {r.id for r in reqs if r.modality in ("shall_not", "should_not")}
     for i in ics:
@@ -138,4 +218,7 @@ def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem]) 
         items.extend(derive_object(o))
     for o in objs:
         items.extend(derive_inopportune(o))
+    if deflate:
+        items = group_generics(items, objs)      # first, so a reference site no longer looks like a ladder
+        items = drop_overlaps(items, reqs, objs)  # then, against what rule (a) left standing
     return items
