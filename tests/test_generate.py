@@ -1,7 +1,7 @@
 import json
 import re
 
-from tpg.generate import (BATCH_LIMIT, build_batch_prompt, build_generate_prompt, context_excerpt, generate,
+from tpg.generate import (BATCH_LIMIT, KIND_RULES, build_batch_prompt, build_generate_prompt, context_excerpt, generate,
                           generate_item, generate_source)
 from tpg.llm import LLMError, OllamaLLM
 from tpg.models import Clause, CoverageItem, Requirement, TestCaseBatch, TestObject
@@ -147,7 +147,7 @@ def test_generate_source_reprompts_only_the_case_failing_its_kind_rule(fake_llm)
     cases, gaps = generate_source(OBJ, CLAUSE, [ITEM_PRESENCE, ITEM], llm)
     assert gaps == [] and [c.coverage_item_id for c in cases] == [ITEM_PRESENCE.id, ITEM.id]
     assert ITEM.id in llm.prompts[1] and ITEM_PRESENCE.id not in llm.prompts[1]
-    assert "must expect a rejection" in llm.prompts[1]
+    assert "must observe an outcome" in llm.prompts[1]
 
 
 def test_generate_source_gaps_the_items_still_unproduced(fake_llm):
@@ -208,3 +208,35 @@ def test_a_bad_entry_does_not_reject_the_rest_of_the_batch(fake_llm):
     assert gaps == [] and [c.coverage_item_id for c in cases] == [ITEM_PRESENCE.id, ITEM.id]
     assert "steps are empty" in llm.prompts[1] and "pass_criteria is empty" in llm.prompts[1]
     assert ITEM.id not in llm.prompts[1]
+
+
+# --- D30 wording of the negative rule, D22 applicability in the case (task 17) ---
+
+ITEM_APPLIES = CoverageItem(id="CI-OBJ-5.4-1-value_valid", source_id="OBJ-5.4-1", clause_id="5.4", check="value_valid",
+                            kind="nominal", group="valid_behaviour", purpose="Verify that the value of nonce is fresh",
+                            applies_when=["the extended profile is in use"])
+
+
+def test_the_negative_rule_covers_both_d30_wordings():
+    rule = KIND_RULES["negative"]
+    assert "reject" in rule and "never" in rule
+
+
+def test_both_prompts_state_the_applicability_of_the_purpose():
+    p = build_generate_prompt(ITEM_APPLIES, OBJ, CLAUSE, [])
+    b = build_batch_prompt(OBJ, CLAUSE, [ITEM_PRESENCE, ITEM_APPLIES], [])
+    assert "the extended profile is in use" in p and "the extended profile is in use" in b
+    assert "precondition" in p.lower() and "precondition" in b.lower()
+
+
+def test_the_case_states_the_applicability_as_a_precondition(fake_llm):
+    cases, gaps = generate_source(OBJ, CLAUSE, [ITEM_APPLIES], fake_llm([reply([ITEM_APPLIES])]))
+    assert gaps == [] and cases[0].preconditions == ["the extended profile is in use"]
+    tc, gap = generate_item(ITEM_APPLIES, OBJ, CLAUSE, fake_llm([DRAFT]))
+    assert gap is None and tc.preconditions == ["the extended profile is in use"]
+
+
+def test_the_case_does_not_repeat_an_applicability_the_model_already_stated(fake_llm):
+    stated = {**DRAFT, "preconditions": ["The extended profile is in use", "a session is open"]}
+    cases, _ = generate_source(OBJ, CLAUSE, [ITEM_APPLIES], fake_llm([reply([ITEM_APPLIES], stated)]))
+    assert cases[0].preconditions == ["The extended profile is in use", "a session is open"]

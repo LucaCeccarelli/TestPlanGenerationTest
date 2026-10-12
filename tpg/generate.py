@@ -19,8 +19,12 @@ FIELDS = """Test case fields (ISO/IEC/IEEE 29119-3 test case specification):
 
 KIND_RULES = {
     "nominal": "This is a nominal case: the stimulus is valid and the expected result is the behaviour the specification requires.",
-    "negative": "This is a negative case: the stimulus violates the obligation or the condition does not hold; the expected result "
-                "must describe the rejection, the error, or the absence of the obligation's effect.",
+    # D30 gives a negative purpose two wordings and the rule must ask for whichever one the purpose carries:
+    # an invalid instance supplied and rejected, or the system under test never producing or holding one.
+    "negative": "This is a negative case: the obligation is violated or the condition does not hold; the expected result "
+                "must describe an outcome that is observed, either the rejection, the error or the absence of the "
+                "obligation's effect, or, where the test purpose asks that the system under test never produces or holds "
+                "an invalid instance, that no such instance is ever observed. Never write that something is not required.",
     "boundary": "This is a boundary case: use the exact limit value(s) stated (minimum or maximum), and state which one.",
 }
 WINDOW = 1500
@@ -52,6 +56,7 @@ def _describe_source(src: Requirement | TestObject) -> str:
 
 
 CONDITION_LEAD = "Conditions for this case, state them in preconditions or inputs"
+APPLIES_LEAD = "This purpose applies only when, state each one as a precondition in these words"
 
 
 def _conditions(item: CoverageItem) -> str:
@@ -60,12 +65,18 @@ def _conditions(item: CoverageItem) -> str:
     return ", ".join(f"'{c}' {'holds' if v else 'does not hold'}" for c, v in item.condition_assignment.items())
 
 
+def _notes(item: CoverageItem, lead: str) -> str:
+    """The item's condition assignment and its applicability (D22), one line each prefixed by `lead`."""
+    lines = [f"{CONDITION_LEAD}: {c}"] if (c := _conditions(item)) else []
+    if item.applies_when:
+        lines.append(f"{APPLIES_LEAD}: " + "; ".join(item.applies_when))
+    return "".join(f"\n{lead}{line}" for line in lines)
+
+
 def build_generate_prompt(item: CoverageItem, source: Requirement | TestObject, clause: Clause, failures: list[str]) -> str:
     feedback = ""
     if failures:
         feedback = "\nYour previous answer was rejected for these reasons; fix them:\n" + "\n".join(f"- {f}" for f in failures) + "\n"
-    cond = _conditions(item)
-    assign = f"\n- {CONDITION_LEAD}: {cond}" if cond else ""
     return f"""You write ONE test case for one test purpose derived from a technical specification.
 
 Test purpose {item.id} (check: {item.check}, kind: {item.kind}):
@@ -84,15 +95,21 @@ Context, clause {clause.id} "{clause.title}" (excerpt):
 Rules:
 - The case accomplishes exactly this test purpose and nothing else.
 - {KIND_RULES[item.kind]}
-- preconditions, inputs and steps are lists of plain strings; write data values as text.{assign}
+- preconditions, inputs and steps are lists of plain strings; write data values as text.{_notes(item, "- ")}
 {feedback}
 Reply with JSON only: {{"objective": ..., "preconditions": [...], "inputs": [...], "steps": [...], "expected_result": ..., "pass_criteria": ...}}"""
 
 
 def _test_case(item: CoverageItem, d: TestCaseDraft) -> TestCase:
-    """The one place a test case is minted, so its id is the same whichever path produced the draft."""
+    """The one place a test case is minted, so its id is the same whichever path produced the draft.
+    D22: the item's applicability is a precondition of the case (which is where the official suite puts
+    it), prepended verbatim unless the model already stated it. Done here rather than checked in verify,
+    because a mandatory field is one more way for a case to fail its check and lose its LLM call."""
+    fields = d.model_dump(exclude={"coverage_item_id"})
+    stated = " ".join(fields["preconditions"]).lower()
+    fields["preconditions"] = [a for a in item.applies_when if a.lower() not in stated] + fields["preconditions"]
     return TestCase(id=f"TC-{item.id}", source_id=item.source_id, coverage_item_id=item.id, kind=item.kind,
-                    condition_assignment=item.condition_assignment, **d.model_dump(exclude={"coverage_item_id"}))
+                    condition_assignment=item.condition_assignment, **fields)
 
 
 def generate_item(item: CoverageItem, source: Requirement | TestObject, clause: Clause, llm, attempts: int = 3) -> tuple[TestCase | None, Gap | None]:
@@ -112,8 +129,8 @@ def generate_item(item: CoverageItem, source: Requirement | TestObject, clause: 
 
 def build_batch_prompt(source: Requirement | TestObject, clause: Clause, items: list[CoverageItem],
                        failures: list[str]) -> str:
-    purposes = "\n".join(f"- {i.id} (check: {i.check}, kind: {i.kind}): {i.purpose}"
-                         + (f"\n  {CONDITION_LEAD}: {c}" if (c := _conditions(i)) else "") for i in items)
+    purposes = "\n".join(f"- {i.id} (check: {i.check}, kind: {i.kind}): {i.purpose}" + _notes(i, "  ")
+                         for i in items)
     # KIND_RULES is worded for a single case ("This is a nominal case: ..."); here the kind labels the rule
     kinds = "\n".join(f"- A case of kind {k}: {KIND_RULES[k].split(': ', 1)[1]}"
                       for k in dict.fromkeys(i.kind for i in items))
