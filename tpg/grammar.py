@@ -23,7 +23,10 @@ import re
 from tpg.extract import norm
 from tpg.models import Clause, TestObjectDraft
 
-RANGE_RE = re.compile(r"(\d+)\s*\.\.\s*(\d+)")
+RANGE_RE = re.compile(r"(\d+)\s*\.\.\.?\s*(\d+)")
+# a repetition carrying at least one bound, written the same way in CDDL (RFC 8610 section 3.2) and
+# in ABNF (RFC 5234 section 3.6); a bare "*" carries no bound and is therefore not matched
+REPEAT_RE = re.compile(r"\d+\*\d*|\d*\*\d+")
 
 
 def _bracket_delta(line: str) -> int:
@@ -110,20 +113,87 @@ def _strip_innermost(text: str, pattern: str) -> str:
 
 # --- CDDL (RFC 8610) ------------------------------------------------------------------------------
 
+CDDL_ID = r"[A-Za-z@_$][\w@$.-]*"
 CDDL_START_RE = re.compile(r"^[A-Za-z][\w-]*\s*=\s*[({\[]")
 CDDL_RULE_RE = re.compile(r"^([A-Za-z][\w-]*)")
-# an occurrence indicator, then a member key (bareword or text literal), then ":" or "=>", then a type
-CDDL_MEMBER_RE = re.compile(r"^(?P<occ>\?|\+|\d*\*\d*)?\s*(?P<key>\"[^\"]+\"|[A-Za-z_][\w-]*)\s*(?::|=>)\s*(?P<type>.+?)\s*,?$")
+# RFC 8610 section 3.5.1: a member key is a bareword or a value followed by ":", or a type followed
+# by "=>". A bareword before "=>" is a type, so it names no field and is deliberately not a key here.
+CDDL_MEMBER_RE = re.compile(r"^(?P<occ>\?|\+|\d*\*\d*)?\s*"
+                            r"(?:(?P<key>\"[^\"]+\"|[A-Za-z_][\w-]*)\s*:|(?P<vkey>\"[^\"]+\")\s*=>)"
+                            r"\s*(?P<type>.+?)\s*,?$")
+CDDL_TYPE_KEY_RE = re.compile(r"^(?:\?|\+|\d*\*\d*)?\s*[A-Za-z_][\w-]*\s*\^?\s*=>")
+# a one-line rule (RFC 8610 section 3.1) whose right-hand side is one type: an identifier or a tagged
+# type, optionally carrying control operators. Anything else - a bracket, an alternation, a second
+# bare word - is not a lone type, which is what keeps a sentence with an equals sign out.
+CDDL_ASSIGN_RE = re.compile(r"^(?P<name>" + CDDL_ID + r")\s*=\s*(?P<type>"
+                            r"(?:#\d(?:\.\d+)?(?:\([^()]*\))?|" + CDDL_ID + r")"
+                            r"(?:\s*\.[a-z]+\s*(?:\([^()]*\)|\"[^\"]*\"|[^\s()]+))*)$")
 CDDL_SIZE_RE = re.compile(r"\.size\s*(\([^)]*\)|\S+)")
+# RFC 8610 sections 3.8.2 and 3.8.3: these operators bound the value, not the encoded length
+CDDL_VALUE_CONTROL_RE = re.compile(r"\.(regexp|bits|lt|le|gt|ge|eq|ne)\s*(\([^)]*\)|\"[^\"]*\"|\S+)")
 CDDL_CONTROL_RE = re.compile(r"\.[a-z]+\s*(?:\([^)]*\)|\S+)")
 CDDL_LITERAL_RE = re.compile(r"\"[^\"]*\"|-?\d+(?:\.\d+)?|true|false|null|h'[0-9a-fA-F]*'")
+CDDL_GROUP_CHOICE_RE = re.compile(r",?\s*//\s*$")
+# the comparison and matching operators are symbols a test purpose cannot read back, so the domain
+# they state is written in the words of their definition rather than left as the marker
+CONTROL_TEXT = {"lt": "less than", "le": "at most", "gt": "greater than", "ge": "at least",
+                "eq": "equal to", "ne": "not equal to", "regexp": "matching", "bits": "bits set within"}
 # an occurrence indicator carrying no number states no limit, so it is written out rather than left
 # as a marker: a boundary case derived from "*" would read as nonsense
 OCCURRENCE_TEXT = {"*": "any number of occurrences", "+": "one or more occurrences"}
 
 
+def _cddl_assignments(text: str) -> list[str]:
+    """Every one-line type assignment the text writes at bracket depth zero. A line inside a
+    declaration is a member of it, not a rule, so the depth is tracked rather than assumed."""
+    out: list[str] = []
+    depth = 0
+    for line in text.splitlines():
+        delta = _bracket_delta(line)
+        if depth == 0 and delta == 0 and CDDL_ASSIGN_RE.match(_strip_comment(line).strip()):
+            out.append(line.strip())
+        depth = max(0, depth + delta)
+    return out
+
+
+def _cddl_constraints(type_text: str) -> tuple[str, str | None, str | None]:
+    """A type with its constraints removed, plus the value domain and the size they state.
+
+    RFC 8610 section 3.8.1: `.size` bounds the encoded length, so it is a size and no domain of
+    values. Sections 3.8.2 and 3.8.3: the comparison and matching operators bound the value, so they
+    are a domain and no length. Section 2.2.2: a range is a range of *values*, so it is both a domain
+    to violate and a pair of bounds to probe - equivalence partitioning and boundary value analysis
+    (ISO/IEC/IEEE 29119-4 clauses 5.2.2 and 5.2.3) apply to the same construct. A bounded repetition
+    inside the type bounds how many occurrences it holds, which is a size.
+
+    A tagged type (section 3.6) is returned verbatim: what stands inside the tag constrains the
+    tagged type, not the one the tag builds, and reading it as this type's own domain would be false.
+    """
+    if type_text.startswith("#"):
+        return type_text, None, None
+    size = value_domain = None
+    if ms := CDDL_SIZE_RE.search(type_text):
+        size = " ".join(ms.group(1).strip("()").split())
+        type_text = type_text[:ms.start()] + " " + type_text[ms.end():]
+    if mv := CDDL_VALUE_CONTROL_RE.search(type_text):
+        value_domain = f"{CONTROL_TEXT[mv.group(1)]} {' '.join(mv.group(2).strip('()').split())}"
+        type_text = type_text[:mv.start()] + " " + type_text[mv.end():]
+    type_text = CDDL_CONTROL_RE.sub(" ", type_text)
+    if mr := RANGE_RE.search(type_text):
+        bound = f"{mr.group(1)}..{mr.group(2)}"
+        value_domain, size = value_domain or bound, size or bound
+        type_text = RANGE_RE.sub(" ", type_text)
+    elif size is None and (mo := REPEAT_RE.search(type_text)):
+        size = mo.group(0)
+    return " ".join(type_text.split()), value_domain, size
+
+
 def cddl_detect(text: str) -> list[str]:
-    return ["\n".join(b) for b in _blocks(text, CDDL_START_RE)]
+    """Every bracketed declaration, then every one-line type assignment - but the latter only where
+    the text independently shows CDDL, i.e. where a bracketed declaration was found. `name = type` is
+    a shape an ordinary sentence takes too, and the shape alone is too thin a gate for it."""
+    blocks = ["\n".join(b) for b in _blocks(text, CDDL_START_RE)]
+    return blocks + (_cddl_assignments(text) if blocks else [])
 
 
 def cddl_parse(block: str) -> list[TestObjectDraft]:
@@ -131,40 +201,44 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
     and positional members have no name to emit at all: an array declaration none of whose members
     is named yields one `structure` draft for the declaration itself, so it is not lost, and the
     positions it holds are not objects. Which position holds what is a nesting the object model does
-    not carry (D29)."""
+    not carry (D29).
+
+    A block of one line whose right-hand side is a bare type is no member list at all: it is a type
+    assignment (RFC 8610 section 3.1), and it declares its name. That name gets one `structure`
+    object - the same kind an ABNF rule gets, because a named type is a declared structure and not a
+    member of one - with `presence="unspecified"`, since an assignment states nothing about whether
+    the type appears anywhere."""
     lines = block.splitlines()
+    if len(lines) == 1 and (a := CDDL_ASSIGN_RE.match(_strip_comment(lines[0]).strip())):
+        type_text, value_domain, size = _cddl_constraints(a.group("type"))
+        return [TestObjectDraft(name=a.group("name"), kind="structure", presence="unspecified",
+                                type=type_text or None, value_domain=value_domain, size=size,
+                                source_quote=lines[0].strip())]
     rule = CDDL_RULE_RE.match(lines[0].strip())
     if not rule:
         return []
     out: list[TestObjectDraft] = []
+    type_keyed = False
     for quote in _members(lines):
-        m = CDDL_MEMBER_RE.match(_strip_comment(quote))
+        stripped = _strip_comment(quote)
+        m = CDDL_MEMBER_RE.match(stripped)
         if not m:
+            type_keyed = type_keyed or bool(CDDL_TYPE_KEY_RE.match(stripped))
             continue
         occ = m.group("occ") or ""
-        type_text = m.group("type").strip()
-        size = None
-        ms = CDDL_SIZE_RE.search(type_text)
-        if ms:
-            size = " ".join(ms.group(1).strip("()").split())
-        type_text = CDDL_CONTROL_RE.sub("", type_text).strip()
-        if size is None:
-            mr = RANGE_RE.search(type_text)
-            if mr:
-                size = f"{mr.group(1)}..{mr.group(2)}"
-                type_text = RANGE_RE.sub("", type_text).strip()
+        type_text, value_domain, size = _cddl_constraints(
+            CDDL_GROUP_CHOICE_RE.sub("", m.group("type").strip()).strip())
         if size is None and occ and occ != "?":
             size = OCCURRENCE_TEXT.get(occ, occ)   # an occurrence indicator is a count constraint
-        value_domain = None
         alts = [a.strip() for a in type_text.split("/") if a.strip()]
         if alts and all(CDDL_LITERAL_RE.fullmatch(a) for a in alts):
-            value_domain = " / ".join(alts)
+            value_domain = value_domain or " / ".join(alts)
             type_text = ""                 # the alternation is the value domain, not an encoding
-        out.append(TestObjectDraft(name=m.group("key").strip('"'), kind="field",
+        out.append(TestObjectDraft(name=(m.group("key") or m.group("vkey")).strip('"'), kind="field",
                                    presence="optional" if occ == "?" else "mandatory",
                                    type=type_text or None, value_domain=value_domain, size=size,
                                    relations=[f"member of {rule.group(1)}"], source_quote=quote))
-    if not out and lines[0].rstrip().endswith("["):
+    if not out and (type_keyed or lines[0].rstrip().endswith("[")):
         out.append(TestObjectDraft(name=rule.group(1), kind="structure", presence="unspecified",
                                    source_quote=lines[0].strip()))
     return out
@@ -176,11 +250,17 @@ ABNF_RULE_RE = re.compile(r"^(?P<name>[A-Za-z][A-Za-z0-9-]*)\s*=/?\s*(?P<element
 # the acceptance gate: an element list is made of terminal values, rule names, repetitions,
 # alternations and groups, and of nothing else
 ABNF_ELEMENTS_RE = re.compile(r"^(?:\"[^\"]*\"|%[bdx][0-9A-Fa-f]+(?:[.-][0-9A-Fa-f]+)*|[A-Za-z][A-Za-z0-9-]*|\d+|\*|/|[()\[\]]|\s)+$")
-ABNF_REPEAT_RE = re.compile(r"\d+\*\d*|\d*\*\d+")
 ABNF_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ABNF_QUOTED_RE = re.compile(r"\"[^\"]*\"")
 ABNF_NUMERIC_RE = re.compile(r"%[bdx][0-9A-Fa-f]+(?:[.-][0-9A-Fa-f]+)*")
 ABNF_OPERATOR_RE = re.compile(r"[*/()\[\]]")
+# a terminal value, text or numeric (RFC 5234 sections 2.3 and 3.4): it states which values are
+# allowed, so an element list made of nothing but terminals is a value domain
+ABNF_TERMINAL_RE = re.compile(r"\"[^\"]*\"|%[bdx][0-9A-Fa-f]+(?:[.-][0-9A-Fa-f]+)*")
+ABNF_RANGE_RE = re.compile(r"%[bdx][0-9A-Fa-f]+-[0-9A-Fa-f]+")
+# RFC 5234 section 3.7, specific repetition: `<n>element` is exactly n occurrences. Searched after
+# the terminals have been blanked out, so a digit inside a value is never read as a count.
+ABNF_SPECIFIC_RE = re.compile(r"\d+(?=[A-Za-z(\[])")
 
 
 def abnf_detect(text: str) -> list[str]:
@@ -212,11 +292,11 @@ def _balanced(elements: str) -> bool:
 def _abnf_rule(line: str, declared: set[str]) -> tuple[str, str] | None:
     """The rule a line declares, or None. A line passes only if its element list is one: made of
     nothing but the constructs of RFC 5234, with its groups and options closed, with at least one
-    complete element in it, and either carrying a construct of the notation - a repetition, an
-    alternation, a group, a text value, a numeric value - or referencing rule names that this same
-    text declares. Without a construct and without a declared reference, a sentence carrying an
-    equals sign would be an element list of bare words, and a rule head of another notation an
-    element list of one bracket."""
+    complete element in it, and either carrying a construct of the notation - a repetition variable
+    or specific, an alternation, a group, a text value, a numeric value - or referencing rule names
+    that this same text declares. Without a construct and without a declared reference, a sentence
+    carrying an equals sign would be an element list of bare words, and a rule head of another
+    notation an element list of one bracket."""
     m = ABNF_RULE_RE.match(line)
     if not m:
         return None
@@ -227,7 +307,9 @@ def _abnf_rule(line: str, declared: set[str]) -> tuple[str, str] | None:
         return None
     if not (names or terminal):
         return None
-    if not (terminal or ABNF_OPERATOR_RE.search(elements) or all(n in declared for n in names)):
+    if not (terminal or ABNF_OPERATOR_RE.search(elements)
+            or ABNF_SPECIFIC_RE.search(ABNF_QUOTED_RE.sub(" ", ABNF_NUMERIC_RE.sub(" ", elements)))
+            or all(n in declared for n in names)):
         return None
     return m.group("name"), elements
 
@@ -246,18 +328,26 @@ def abnf_parse(block: str) -> list[TestObjectDraft]:
     for name, elements, quote in rules:
         presence = "mandatory" if name in required else ("optional" if name in bracketed else "unspecified")
         alts = [a.strip() for a in elements.split("/") if a.strip()]
-        value_domain = " / ".join(alts) if alts and all(ABNF_QUOTED_RE.fullmatch(a) for a in alts) else None
-        repeat = ABNF_REPEAT_RE.search(elements)
+        value_domain = " / ".join(alts) if alts and all(ABNF_TERMINAL_RE.fullmatch(a) for a in alts) else None
+        bare = ABNF_QUOTED_RE.sub(" ", ABNF_NUMERIC_RE.sub(" ", elements))
+        # a repetition bounds how many occurrences the rule holds, and the two endpoints of a value
+        # range bound which values it may take: each is a number to probe at
+        size = next((m.group(0) for m in (REPEAT_RE.search(elements), ABNF_SPECIFIC_RE.search(bare),
+                                          ABNF_RANGE_RE.search(elements)) if m), None)
         out.append(TestObjectDraft(name=name, kind="structure", presence=presence, type=elements,
-                                   value_domain=value_domain, size=repeat.group(0) if repeat else None,
-                                   source_quote=quote))
+                                   value_domain=value_domain, size=size, source_quote=quote))
     return out
 
 
 # --- JSON Schema ---------------------------------------------------------------------------------
 
 JSON_START_RE = re.compile(r"^\{")
-JSON_SIZE_KEYS = ("minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems")
+# a bound that a boundary case can be probed at: a length, a count, or the two ends of a numeric
+# range, which bounds the value and is therefore in both lists
+JSON_SIZE_KEYS = ("minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems",
+                  "minProperties", "maxProperties")
+# the assertions that restrict which values are valid rather than how long the instance is
+JSON_VALUE_KEYS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
 
 
 def _json_object(block: str) -> dict | None:
@@ -282,6 +372,9 @@ def json_schema_parse(block: str) -> list[TestObjectDraft]:
         return []
     lines = [line.strip() for line in block.splitlines()]
     required = doc.get("required") if isinstance(doc.get("required"), list) else []
+    # `$id` is the only name the notation gives a schema, so it is the only thing the merge can key
+    # on to tell two schemas of one clause apart. A schema without one stays anonymous.
+    schema_id = doc["$id"] if isinstance(doc.get("$id"), str) and doc["$id"] else None
     out: list[TestObjectDraft] = []
     for name, schema in doc["properties"].items():
         if not isinstance(schema, dict) or not name:
@@ -298,11 +391,15 @@ def json_schema_parse(block: str) -> list[TestObjectDraft]:
             value_domain = _json_text(schema["const"])
         elif isinstance(schema.get("pattern"), str):
             value_domain = schema["pattern"]
-        size = ", ".join(f"{k} {schema[k]}" for k in JSON_SIZE_KEYS if k in schema)
+        else:
+            value_domain = ", ".join(f"{k} {_json_text(schema[k])}" for k in JSON_VALUE_KEYS if k in schema)
+        size = ", ".join(f"{k} {_json_text(schema[k])}" for k in JSON_SIZE_KEYS if k in schema)
         out.append(TestObjectDraft(name=name, kind="field",
                                    presence="mandatory" if name in required else "optional",
                                    type=(f"{kinds} ({fmt})" if kinds and fmt else kinds or fmt) or None,
-                                   value_domain=value_domain, size=size or None, source_quote=quote))
+                                   value_domain=value_domain or None, size=size or None,
+                                   relations=[f"member of {schema_id}"] if schema_id else [],
+                                   source_quote=quote))
     return out
 
 
@@ -312,6 +409,11 @@ ASN1_START_RE = re.compile(r"^(?P<name>[A-Z][\w-]*)\s*::=\s*(?P<construct>SEQUEN
 ASN1_MEMBER_RE = re.compile(r"^(?P<field>[a-z][\w-]*)\s+(?P<rest>[A-Z].*)$")
 ASN1_SIZE_RE = re.compile(r"SIZE\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
 ASN1_NAMED_RE = re.compile(r"\{([^{}]*)\}")
+# X.680 clause 51: a permitted-alphabet constraint and a pattern constraint each restrict which
+# values are valid. The pattern is matched first because its regular expression may itself carry
+# braces, which the named-number list would otherwise read as a list of named values.
+ASN1_PATTERN_RE = re.compile(r"PATTERN\s*\"[^\"]*\"")
+ASN1_FROM_RE = re.compile(r"FROM\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)")
 ASN1_TAIL_RE = re.compile(r"\b(?:OPTIONAL|DEFAULT)\b.*$")
 
 
@@ -334,18 +436,21 @@ def asn1_parse(block: str) -> list[TestObjectDraft]:
         rest = m.group("rest").strip().rstrip(",").strip()
         optional = choice or bool(re.search(r"\b(?:OPTIONAL|DEFAULT)\b", rest))
         value_domain = None
-        named = ASN1_NAMED_RE.search(rest)
-        if named:
-            value_domain = " ".join(named.group(1).split()) or None
+        if pattern := ASN1_PATTERN_RE.search(rest):
+            value_domain = " ".join(pattern.group(0).split())
+            rest = rest[:pattern.start()] + " " + rest[pattern.end():]
+        if named := ASN1_NAMED_RE.search(rest):
+            value_domain = value_domain or " ".join(named.group(1).split()) or None
             rest = rest[:named.start()] + " " + rest[named.end():]
+        if alphabet := ASN1_FROM_RE.search(rest):
+            value_domain = value_domain or " ".join(alphabet.group(0).split())
         size = None
-        ms = ASN1_SIZE_RE.search(rest)
-        if ms:
+        if ms := ASN1_SIZE_RE.search(rest):       # a length constraint, never a domain of values
             size = " ".join(ms.group(1).split())
-        else:
-            mr = RANGE_RE.search(rest)
-            if mr:
-                size = f"{mr.group(1)}..{mr.group(2)}"
+        elif (mr := RANGE_RE.search(rest)) and not alphabet:
+            # a value range is both the domain to violate and the pair of bounds to probe
+            size = f"{mr.group(1)}..{mr.group(2)}"
+            value_domain = value_domain or size
         rest = ASN1_TAIL_RE.sub("", _strip_innermost(rest, r"\([^()]*\)"))
         out.append(TestObjectDraft(name=m.group("field"), kind="field",
                                    presence="optional" if optional else "mandatory",

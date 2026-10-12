@@ -256,3 +256,185 @@ def test_an_asn1_member_records_the_type_it_belongs_to():
     text = "One ::= SEQUENCE {\n  item INTEGER\n}\nTwo ::= SEQUENCE {\n  item BOOLEAN\n}"
     assert [(d["name"], d["type"], d["relations"]) for d in _run("asn1", text)] == [
         ("item", "INTEGER", ["member of One"]), ("item", "BOOLEAN", ["member of Two"])]
+
+
+# --- constraint harvesting per notation: value domains and sizes ---------------------------------
+
+CDDL_VALUE_CONTROLS = [
+    ("uint .lt 10", "less than 10"),
+    ("uint .le 9", "at most 9"),
+    ("uint .gt 3", "greater than 3"),
+    ("uint .ge 1", "at least 1"),
+    ("uint .eq 5", "equal to 5"),
+    ("uint .ne 0", "not equal to 0"),
+    ('tstr .regexp "[0-9]+"', 'matching "[0-9]+"'),
+    ("uint .bits flags", "bits set within flags"),
+]
+
+
+@pytest.mark.parametrize("type_text,expected", CDDL_VALUE_CONTROLS, ids=[t.split()[1] for t, _ in CDDL_VALUE_CONTROLS])
+def test_a_cddl_value_control_operator_becomes_the_value_domain(type_text, expected):
+    """RFC 8610 section 3.8.2 and 3.8.3: these operators bound the value, not the encoded length."""
+    got = _run("cddl", "r = {\n  item: %s,\n}" % type_text)
+    assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [(expected, None, type_text.split()[0])]
+
+
+def test_a_cddl_size_control_is_a_size_and_not_a_value_domain():
+    """RFC 8610 section 3.8.1: `.size` bounds the encoded length, so it states no domain of values."""
+    got = _run("cddl", "r = {\n  item: bstr .size (4..8),\n}")
+    assert [(d["value_domain"], d["size"]) for d in got] == [(None, "4..8")]
+
+
+def test_a_bare_cddl_range_is_both_a_value_domain_and_a_size():
+    """RFC 8610 section 2.2.2: a range is a range of values, so it is a domain to violate and a pair
+    of bounds to probe at the same time."""
+    got = _run("cddl", "r = {\n  item: 1..32,\n}")
+    assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [("1..32", "1..32", None)]
+
+
+def test_a_bounded_occurrence_inside_a_cddl_type_becomes_a_size():
+    got = _run("cddl", "r = {\n  item: [2*4 tstr],\n}")
+    assert [(d["size"], d["type"]) for d in got] == [("2*4", "[2*4 tstr]")]
+
+
+def test_a_cddl_group_choice_marker_does_not_reach_the_type():
+    """RFC 8610 section 2.2.2: `//` separates the branches of a group choice; it is not part of a type."""
+    got = _run("cddl", "r = {\n  one: tstr, //\n  two: uint\n}")
+    assert [(d["name"], d["type"]) for d in got] == [("one", "tstr"), ("two", "uint")]
+
+
+CDDL_SINGLE = """Outer = {
+  "inner" : Inner
+}
+Inner = tstr
+Bounded = bstr .size 32
+Tagged = #6.24(bstr .cbor Inner)"""
+
+
+def test_a_single_line_cddl_rule_declares_a_named_type():
+    """RFC 8610 section 3.1: a rule whose right-hand side is a bare type assigns that type to the
+    name. It declares the name, so it yields one object; nothing states whether it must appear."""
+    assert _run("cddl", CDDL_SINGLE)[1:] == [
+        _draft(name="Inner", kind="structure", presence="unspecified", type="tstr",
+               source_quote="Inner = tstr"),
+        _draft(name="Bounded", kind="structure", presence="unspecified", type="bstr", size="32",
+               source_quote="Bounded = bstr .size 32"),
+        _draft(name="Tagged", kind="structure", presence="unspecified", type="#6.24(bstr .cbor Inner)",
+               source_quote="Tagged = #6.24(bstr .cbor Inner)"),
+    ]
+
+
+CDDL_NOT_A_RULE = [
+    "The device = ready",                    # two bare words: prose, not a type
+    "Note that quality = reliability.",      # a sentence
+    "Outer = {",                             # a block head, read as a block
+    'Mode = "fast" / "slow"',                # an alternation, which the ABNF handler reads
+]
+
+
+@pytest.mark.parametrize("line", CDDL_NOT_A_RULE, ids=[l.split(" =")[0][:12] for l in CDDL_NOT_A_RULE])
+def test_a_line_that_is_not_a_cddl_type_assignment_yields_no_object(line):
+    assert [d["name"] for d in _run("cddl", CDDL_SINGLE + "\n" + line)] == ["inner", "Inner", "Bounded", "Tagged"]
+
+
+def test_a_single_line_cddl_rule_needs_the_notation_in_evidence():
+    """A bare `name = type` line is a shape a sentence can take too, so it is only read where the
+    text independently shows CDDL: at least one bracketed declaration."""
+    assert _run("cddl", "Inner = tstr\nBounded = bstr .size 32") == []
+
+
+def test_a_type_keyed_cddl_entry_yields_no_field():
+    """RFC 8610 section 3.5.1: the key before `=>` is a type, so it names no field of the map."""
+    assert [d["name"] for d in _run("cddl", "r = {\n  * tstr => any,\n  \"named\" => uint,\n}")] == ["named"]
+
+
+def test_a_map_of_only_type_keyed_entries_yields_the_structure_itself():
+    """The entries name no field, but the declaration still declares the map, so it is not lost."""
+    assert _run("cddl", "Index = {\n  + tstr => any\n}") == [
+        _draft(name="Index", kind="structure", presence="unspecified", source_quote="Index = {")]
+
+
+def test_abnf_numeric_value_alternatives_are_a_value_domain():
+    """RFC 5234 section 2.3: a numeric terminal is a value, so an alternation of them is a domain."""
+    got = _run("abnf", "flag = %x41 / %x42\nalso = %d13.10")
+    assert [(d["name"], d["value_domain"]) for d in got] == [("flag", "%x41 / %x42"), ("also", "%d13.10")]
+
+
+def test_an_abnf_value_range_is_a_value_domain_and_a_size():
+    """RFC 5234 section 3.4: a value range alternative states which values are allowed and its two
+    endpoints are the bounds to probe."""
+    got = _run("abnf", "digit = %x30-39")
+    assert [(d["value_domain"], d["size"]) for d in got] == [("%x30-39", "%x30-39")]
+
+
+def test_an_abnf_specific_repetition_is_a_size():
+    """RFC 5234 section 3.7: `<n>element` is exactly n occurrences, which is a count to probe."""
+    assert [d["size"] for d in _run("abnf", "year = 4DIGIT\nmix = 1*8ALPHA\nver = \"1.0\"")] == ["4", "1*8", None]
+
+
+JSON_BOUNDS = """{
+  "$id": "https://example.invalid/schema",
+  "properties": {
+    "amount": {"type": "integer", "minimum": 1, "maximum": 99, "multipleOf": 3},
+    "ratio": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "bag": {"type": "object", "minProperties": 1, "maxProperties": 4}
+  }
+}"""
+
+
+def test_json_schema_numeric_bounds_are_a_value_domain():
+    got = {d["name"]: d["value_domain"] for d in _run("json_schema", JSON_BOUNDS)}
+    assert got == {"amount": "minimum 1, maximum 99, multipleOf 3",
+                   "ratio": "exclusiveMinimum 0, exclusiveMaximum 1", "bag": None}
+
+
+def test_json_schema_counts_are_a_size():
+    got = {d["name"]: d["size"] for d in _run("json_schema", JSON_BOUNDS)}
+    assert got == {"amount": "minimum 1, maximum 99", "ratio": None, "bag": "minProperties 1, maxProperties 4"}
+
+
+def test_json_schema_keys_the_merge_on_the_schema_id():
+    """A schema has no declaration name in the notation except `$id`, which identifies the schema."""
+    assert [d["relations"] for d in _run("json_schema", JSON_BOUNDS)] == \
+        [["member of https://example.invalid/schema"]] * 3
+
+
+ASN1_CONSTRAINED = """Spec ::= SEQUENCE {
+  alpha PrintableString (FROM ("0".."9")),
+  shape PrintableString (PATTERN "[0-9]{4}"),
+  count INTEGER (1..100)
+}"""
+
+
+def test_asn1_value_constraints_become_the_value_domain():
+    """X.680 clause 51: a permitted-alphabet, a pattern and a value range each bound the value; only
+    the range is also a pair of bounds to probe, and SIZE is a length, never a value."""
+    got = [(d["name"], d["type"], d["value_domain"], d["size"]) for d in _run("asn1", ASN1_CONSTRAINED)]
+    assert got == [("alpha", "PrintableString", 'FROM ("0".."9")', None),
+                   ("shape", "PrintableString", 'PATTERN "[0-9]{4}"', None),
+                   ("count", "INTEGER", "1..100", "1..100")]
+
+
+MIXED = '''Rec = {
+  age: 1..120,
+  score: uint .lt 100,
+  hex: bstr .size (4..8),
+}
+Cap = uint .ge 1
+digit = %x30-39
+{
+  "properties": {"amount": {"type": "integer", "minimum": 1, "maximum": 99}}
+}
+Spec ::= SEQUENCE {
+  count INTEGER (1..100)
+}'''
+
+
+def test_every_notation_can_state_a_value_domain_and_a_numeric_size():
+    """The two preconditions the derivation ladder gates its `value_invalid` and `boundary_outside`
+    items on: a `value_domain`, and a `size` carrying a digit. Each notation must be able to supply
+    both out of its own constraint syntax, or those two rungs can never fire."""
+    drafts = harvest(Clause(id="x", title="Declarations", text=MIXED))
+    assert {d.name for d in drafts if d.value_domain} == {"age", "score", "Cap", "digit", "amount", "count"}
+    assert {d.name for d in drafts if d.size and any(c.isdigit() for c in d.size)} == \
+        {"age", "hex", "digit", "amount", "count"}
