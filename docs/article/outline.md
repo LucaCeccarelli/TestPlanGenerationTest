@@ -402,6 +402,21 @@ accept any technical specification has to be honest that it currently accepts an
 PDF carries a recoverable character map, and that this is a property of the file rather than of the
 standard.
 
+**One half of the negative ladder is not finitely testable, and we kept it anyway.** D30 made the
+invalid-side items symmetric in existence and asymmetric only in wording: an object the
+implementation receives is tested by supplying an invalid instance and observing rejection, one it
+produces or holds by requiring that it never produce or hold such an instance. Implementing the
+verifier for both revealed that the symmetry is only grammatical. The received form is a finite,
+executable test purpose. The produced form is a universal claim: no finite test can verify that an
+implementation never emits a malformed value, only falsify it. It is kept, because the obligation on
+an encoder is real and X.291 clause 10.2.2 does place it in invalid behaviour, and because dropping it
+suppresses the entire invalid half for the 83 per cent of objects that are produced or internal, which
+is the defect D30 was raised to fix in the first place. But the honest statement is that such a purpose
+is discharged in practice by observing the implementation's own output and checking that it conforms,
+which partly duplicates the valid-encoding item of the same object, and that resolving it properly
+needs a notion of a sampled conformance check this coverage-item model does not carry. Recorded as
+D32.
+
 **Deflation was mostly a measurement of its own defect.** The generic-group rule first measured a
 16.2 per cent reduction in coverage items, which looked like the answer to the twelvefold
 over-generation. Review found the rule keyed on the object's bare name, so it collapsed occurrences
