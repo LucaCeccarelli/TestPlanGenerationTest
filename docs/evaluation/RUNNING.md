@@ -5,13 +5,11 @@ It deliberately does not carry the ISO documents or any secret, so three things 
 hand. Everything below assumes a local Ollama daemon, which needs no API key and, unlike Ollama
 Cloud, enforces the JSON schema the tool sends.
 
-Written against commit `b9a6421` of `feat/conformance-methodology`, with the fixes to
-`cli.py` and `pipeline.py` still uncommitted in the working tree as it was written. The flags, the
-environment variables, the log lines and the exit codes below were read off that state. Two things
-could not be confirmed against a commit and are marked where they appear: that `--out` is probed for
-writability at startup, and that the run persists as it goes into `<out>.partial.json` and
-`<out>.cases.jsonl`. Both were present in the working tree and both only help; sections 5 to 7 are
-correct whether or not they land.
+Written against commit `b2fbe29` of `feat/conformance-methodology`. Every flag, environment
+variable, log line, sidecar and exit code below was read off that commit; `tests/test_pipeline.py`
+was the only file still being edited, which changes nothing here. The figures quoted as measured are
+either measured on this machine or taken from the branch review and the ledger, and each one says
+which.
 
 ## 1. Get the code
 
@@ -109,13 +107,14 @@ run is only worth six hours if the cases are worth reading.
 
 - `... | tee eval/plan.log` fails instantly if `eval/` does not exist, and so does any `> eval/...`
   redirection, before the generator has done anything.
-- The plan itself is written only at the very end, by `write_plan`. The working-tree version of
-  `cli.py` probes `--out` for writability before the first model call and the pipeline writes two
-  sidecars beside it during the run (`<out>.partial.json` with every stage but generation, and
-  `<out>.cases.jsonl` with one record per case or gap as it arrives), so a missing directory fails in
-  the first seconds instead of after six hours and a crashed run keeps its cases. Neither was
-  committed when this was written, so do not rely on them: the smoke run of section 5 proves the same
-  thing for the price of a few calls.
+- The plan itself is written only at the very end, by `write_plan`, but the run no longer waits
+  until then to touch the path: `--out` is proved writable before the first model call, and during
+  the run the pipeline writes two sidecars beside it -- `<out>.partial.json` with every stage but
+  generation, and `<out>.cases.jsonl` with one record per case or gap as each source is answered --
+  both deleted once the plan itself is on disk. **A missing parent directory is refused, not
+  created**, deliberately: a mistyped path that is silently created puts six hours of work where
+  nobody looks for it. So `mkdir -p eval` first, and the failure you get otherwise arrives in the
+  first second with exit 1.
 
 ## 7. Generate a plan
 
@@ -162,9 +161,10 @@ tail -f eval/plan.log         # or: wc -l eval/plan.log, repeated
 
 A log that has not grown in several minutes means the call in flight is stuck, which the timeout
 will turn into a gap; a log that has not grown in much more than the timeout means the server is
-gone. The last lines of a healthy run are the counts and the `ICS coverage` line. If the sidecars of
-section 6 are in the version you cloned, `wc -l eval/plan.json.cases.jsonl` counts the generated
-cases directly, and `eval/plan.json.partial.json` already holds every stage but generation.
+gone. The last lines of a healthy run are the counts and the `ICS coverage` line. The sidecars of
+section 6 are the second view: `wc -l eval/plan.json.cases.jsonl` counts the cases written so far,
+and `eval/plan.json.partial.json` already holds every stage but generation, so a run that dies in
+hour five has lost nothing but the calls it had not made.
 
 **Exit codes.** 0 means no gaps; **2 means the plan was written but some clause or coverage item
 ended in `gaps`** -- that is the normal outcome of a real run and not a failure, the plan is complete
