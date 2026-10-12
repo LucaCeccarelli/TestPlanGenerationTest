@@ -1,3 +1,5 @@
+import re
+import warnings
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,39 @@ def test_docx_tables_stay_in_document_order(tmp_path):
 def test_rfc_pdf_falls_back_to_pages():
     clauses = ingest(str(FIX / "RFC8949.pdf"))
     assert clauses[0].id == "p1" and len(clauses) > 50
+
+
+def _warnings_of(call):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    return result, [str(w.message) for w in caught]
+
+
+def test_page_fallback_on_a_long_document_is_reported():
+    """One clause per page means no clause structure reached any later stage. On a document long
+    enough for that to be an extraction failure rather than its shape, ingest says so."""
+    clauses, msgs = _warnings_of(lambda: segment([f"body text of page {n}" for n in range(1, 7)]))
+    assert [c.id for c in clauses] == [f"p{n}" for n in range(1, 7)]
+    assert any("no clause heading" in m for m in msgs), msgs
+
+
+def test_short_heading_free_document_is_not_reported():
+    """A handful of pages with no numbering is a plausible document shape, not a defect: stay quiet
+    so the report means something when it does appear."""
+    _, msgs = _warnings_of(lambda: segment(["first page text", "second page text"]))
+    assert msgs == []
+
+
+def test_rfc_pdf_does_not_lose_its_structure_silently():
+    """RFC8949.pdf was printed to PDF by a browser that converted every bold run - which is every
+    heading - to filled vector outlines. Those carry no character code at all, so no extractor can
+    read them and the clause structure is unrecoverable. Ingest must report that rather than hand
+    later stages 77 page-sized clauses as if they were clauses."""
+    clauses, msgs = _warnings_of(lambda: ingest(str(FIX / "RFC8949.pdf")))
+    if any(not re.fullmatch(r"p\d+", c.id) for c in clauses):
+        return  # headings became readable: nothing to report
+    assert any("no clause heading" in m for m in msgs), msgs
 
 
 @pytest.mark.skipif(not (FIX / "iso_18013_5.pdf").exists(), reason="ISO fixture not distributed")

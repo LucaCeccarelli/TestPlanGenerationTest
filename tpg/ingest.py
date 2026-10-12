@@ -1,6 +1,7 @@
 """File -> clauses. No LLM here. Tables become row records, repeated page furniture is removed,
 headings are detected by numbering and sequence, with a page-level fallback."""
 import re
+import warnings
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
@@ -21,6 +22,10 @@ JOINED = "\x0e"   # marks a heading rebuilt from a number-only line and the foll
                   # ponytail: must not be Unicode-whitespace (str.strip() would eat it before _heading() sees it)
 MIN_PAGES_FOR_REPETITION = 4
 EDGE_LINES = 4
+# Below this, one clause per page is a plausible document shape rather than an extraction failure,
+# so the page fallback stays silent. ponytail: a fixed page count, not a share of the document - a
+# share needs a heading count to divide by and in this situation there is none.
+MIN_PAGES_TO_REPORT_NO_HEADING = 4
 
 # ponytail: private-use glyph order is font-specific; extend the table if another PDF shows other control chars
 LIGATURES = str.maketrans({"\x01": "fi", "\x02": "fl", "\x03": "ff", "\x04": "fl", "\x05": "ffi"})
@@ -332,6 +337,21 @@ def segment(pages: list[str]) -> list[Clause]:
             elif current is not None and line:
                 current.text = (current.text + "\n" + line.lstrip(JOINED)).strip()
     if not clauses:
+        if len(pages) >= MIN_PAGES_TO_REPORT_NO_HEADING:
+            # The page fallback keeps the text, but no clause structure reaches any later stage, so
+            # the whole run is built on page-sized clauses. That is a result worth distrusting and
+            # the only honest signal ingest can raise on its own: it cannot record a plan gap
+            # without changing what it returns. A PDF that shows its headings as filled vector
+            # outlines instead of text - what a browser's print-to-PDF does to bold runs - is the
+            # case that looks healthy everywhere else, since its body text extracts perfectly
+            # while its headings carry no character code for any extractor to read.
+            warnings.warn(
+                f"no clause heading found in {len(pages)} pages: every clause is a whole page, so "
+                "later stages run with no clause structure. If the document does have headings, "
+                "they are not extractable text - a PDF that draws them as vector outlines rather "
+                "than showing them as text carries no characters for them.",
+                stacklevel=2,
+            )
         clauses = [Clause(id=f"p{n}", title="", text=page.strip()) for n, page in enumerate(pages, 1)]
     else:
         clauses = _dedupe_ids(clauses)
