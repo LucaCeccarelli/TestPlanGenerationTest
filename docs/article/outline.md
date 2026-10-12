@@ -240,3 +240,129 @@ Reuse the numbering from the two review documents where possible.
 through; `[S29-S37]` were located by web search and read from arXiv. Coverage and precision are
 judged by the same model family that generates, which is a known bias `[S19,S20]` and should be
 stated as a limitation.
+
+---
+
+## 6. Sixth iteration: adopting the conformance-testing methodology
+
+The 13.8 per cent prompted a literature search aimed specifically at the genre of the official
+suite. It changed the target, not just the implementation. Sources added here are `[S45-S55]`.
+
+### 6.1 What we discovered
+
+**The suite is not an ad-hoc document; it is a standard artefact with a standard derivation.** The
+three appendices of ISO/IEC TS 18013-6 are a Test Suite Structure and Test Purposes document in the
+ISO/IEC 9646-2 tradition, whose free twin is ITU-T X.291 (1995). Measured evidence for the match:
+nine labelled fields per case, which map field for field onto ETSI ETR 266's test purpose template
+and onto TPLan's `with { } ensure that { when { } then { } }`; applicability by Technology tag and
+Profile precondition, present in 595 of 907 cases; identifiers encoding system under test, area,
+object and index; 118 families averaging 7.7 cases; 112 distinct precondition blocks, the commonest
+shared by 154 cases; and 27 cases that say "perform all Common_X test cases", which X.291 clause 11
+and Annex D define as generic test suites.
+
+**The metric we were optimising was the wrong one.** `[S45]` is the only published system reporting
+recall against a human-written test suite: 0.84, but with a cosine-similarity matcher at threshold
+0.7, on 90 reference cases, with precision 0.60, and 0.37 on its sister dataset. Strict per-case
+recall of 85 to 90 per cent has never been reported by anyone. What the genre itself measures is
+requirement coverage, and two normative sources state the rule:
+- X.291 clause 10.3.5: "at least one test purpose related to each distinct conformance requirement".
+- ETR 266 Guidance 5: "any mandatory or optional item of the ICS is covered by at least a TP".
+
+**We were over-generating, not under-generating.** 3231 cases for 842 requirements is 3.84 per
+requirement. ETSI's own IPv6 project produced 356 conformance tests from 1112 catalogued
+requirements, 0.32 per requirement `[S48]`, with the norm that "a test suite should never exceed a
+few hundreds of tests". ETS 300 406 wrote in 1995 that "the formal and automatic derivation of tests
+generally leads to a huge number of tests without interest" `[S49]`, and that "the coverage by the
+TPs is never absolute nor complete, and no method exists to objectively evaluate it". Pretschner et
+al. measured a sixfold increase in model-based tests buying 11 per cent more detected errors
+`[S50]`.
+
+**Forty-four per cent of the suite was out of reach by construction.** ISO/IEC/IEEE 29119-4 defines
+twelve specification-based techniques; the tool implemented two. The 257 encoding checks belong to
+syntax testing, clause 5.2.4, and the 44 behaviour checks to state transition and scenario testing,
+5.2.8 and 5.2.9. Ceiling at perfect execution of the old ladder: about 56 per cent.
+
+**Recall, not prose, is the bottleneck, and there is a published ceiling.** ParCleanse `[S53]`
+reaches 99/95 on field names and 94/91 on field types over nine RFC protocols, and its ablation
+attributes 24 to 37 points of recall to dividing the document before prompting. Its dependent
+constraints still sit at 44 per cent even with a frontier model, which says cross-field conditions
+should be recorded as gaps rather than chased. AUTOSPEC `[S54]`, which targets a grammar instead of
+a typed field graph, reaches 16.7 per cent on independent constraints, which is the argument for
+keeping our object model as the normal form.
+
+**Several things nobody has published**, which is where the contribution lies: no generation of a
+TSS&TP or an ICS proforma from prose; no definition of test-purpose equivalence and no suite-to-suite
+matching method; no completeness audit of any real conformance suite against its own standard, which
+X.291 and ETS 300 406 both say is impossible for want of a metric; no per-row extraction accuracy on
+any standard's data-element table; nothing on specification-edition mismatch between an input and a
+reference suite; no covering arrays over conformance applicability predicates.
+
+### 6.2 The specification of this iteration
+
+Nine decisions, D21 to D29, in
+`docs/superpowers/specs/2026-10-12-conformance-methodology-design.md`. New pipeline:
+
+```
+ingest  ->  grammar (deterministic objects from declarations)
+        ->  extract requirements (LLM)  ->  model (LLM objects)
+        ->  ics (deterministic proforma)
+        ->  derive (coverage items, test groups, deflation)
+        ->  generate (batched per source)  ->  verify  ->  emit
+```
+
+| # | Decision | What it adds |
+|---|---|---|
+| D21 | An **ICS proforma**: one item per declared feature with a status of mandatory, optional or conditional, derived from an object's presence or a requirement's modality; one `capability` coverage item per mandatory or optional item | the genre's coverage criterion, satisfied by construction and auditable without an official suite |
+| D22 | **Applicability predicates** `applies_when`, verbatim text on requirements and objects, inherited by coverage items and stated in the case | the Technology and Profile axis, 595 of 907 official cases |
+| D23 | The four **test groups** of X.291 clause 10.2.2: capability, valid behaviour, invalid behaviour, inopportune behaviour, with two new checks `capability` and `inopportune` | the group the tool had no analogue for |
+| D24 | A **grammar stage**, deterministic, harvesting CDDL, ABNF, JSON Schema and ASN.1 declarations into objects with `origin: grammar` | the 257 encoding checks; nothing downstream changes because it emits the existing object type |
+| D25 | **Deflation**: drop a requirement item when an object already yields the same check, and make a recurring structure a **generic group** owned once with a `reference` item at every other site | X.291 clause 11; removes most of the twelvefold inflation |
+| D26 | **Generation batched per source**, up to 8 items per call, keyed by coverage item id, retrying only the failures | 12.7 hours towards about 3, and consistent preconditions per object |
+| D27 | Evaluation with **three denominators**, a **judge-free structural matcher** on data item plus check type, **ICS coverage** as the headline, and macro averages | removes the same-family judge from the headline number |
+| D28 | Chunk limit 3000, salvage of a truncated reply's complete elements, and **row accounting**: the ingest counts table rows so the model stage can be re-prompted for the rows it did not return | the 361 rows that produced 4 objects |
+| D29 | Recorded as deliberately **not** done: the ICS factoring rule of ETS 300 406 Annex A.2, the two-stage combination deflation of X.291 clause 10.3.3, human calibration of the judge | honest gaps, each needing data the model does not carry or human labelling |
+
+### 6.3 The choices, and what was rejected
+
+- **Keep the 29119-3 plan as the output, use 9646-2 as the backbone.** The proforma and the group
+  structure drive generation; the deliverable format does not change. Nothing is lost and the
+  methodology is gained.
+- **The field graph stays the normal form, not a grammar.** ParCleanse against AUTOSPEC is a fivefold
+  difference in constraint recall and the difference is the target representation `[S53,S54]`.
+- **The grammar stage emits objects, not tests.** One handler per notation, dispatched on that
+  notation's own syntax, with the handler's parser as the acceptance gate so detection can be
+  permissive. Keeps the tool generic: RFCs bring ABNF, OpenID brings JSON Schema, 3GPP brings ASN.1,
+  and an ISO table brings nothing, which is exactly where the row accounting of D28 carries the load.
+- **Batch per source, do not template the prose.** The research supports collapsing 3231 artefacts to
+  roughly 100 to 250 patterns, but per-item generation currently scores 56 of 60 grounded, so the
+  batch keeps per-item purposes and takes the cost win without risking the quality that is measured.
+- **Rejected: more enumeration.** We are twelve times denser than ETSI's own pipeline and a 1995
+  standard predicted the outcome.
+- **Rejected: an LLM critic for quality.** Same-family self-review is inert or harmful `[S36,S55]`;
+  the rule-based verifier does the job.
+- **Rejected: a vagueness word list** for the flat actionability score, for the same reason the
+  negative-wording gate was already costing cases. Context, not policing.
+- **Target restated honestly:** 85 to 90 per cent is attainable on ICS and requirement coverage, and
+  is not attainable on strict per-case matching, where the realistic band is 35 to 60 per cent.
+
+### 6.4 Results
+
+To be filled from the next full run on a local 31B model, reporting: ICS items and ICS coverage,
+objects by origin prose against grammar, coverage items by test group, the structural match rate
+beside the LLM judge rate, the three denominators, and wall time against the previous 12.7 hours.
+
+### 6.5 Sources added
+
+`[S45]` Masuda et al., arXiv:2510.03641. `[S46]` ITU-T X.291 (04/1995) = ISO/IEC 9646-2, clauses
+10.2 to 10.4, 11, Annex D. `[S47]` ETSI ETR 266 (1996), Test Purpose style guide. `[S48]` ETSI IPv6
+testing project figures, ITU-T workshop, December 2006. `[S49]` ETSI ETS 300 406 (1995), clause 7.4.1
+and Annexes A and D. `[S50]` Pretschner et al., ICSE 2005. `[S51]` ISO/IEC/IEEE 29119-4:2021, clauses
+5.2.1 to 5.2.12 and 6.2.x. `[S52]` ETSI ES 203 119-4 (2022) TDL Structured Test Objectives and
+ES 202 553 TPLan; Schulz, Wiles and Randall, TestCom/FATES 2007, LNCS 4581. `[S53]` ParCleanse,
+ISSTA 2025, arXiv:2504.18050. `[S54]` AUTOSPEC, arXiv:2511.17977. `[S55]` Wataoka et al., NeurIPS
+2024 on judge self-preference, and the ISSTA 2025 meta-evaluation, arXiv:2502.06193.
+
+**Caveat.** 29119-4's per-technique coverage-item definitions and its Annex F on technique
+effectiveness are paywalled; clause names and the standard's architecture are verified from the free
+preview, their contents are not. ISO/IEC 9646-7 on ICS proformas is not in ITU's free set and is
+known only indirectly through ETS 300 406 Annex A.
