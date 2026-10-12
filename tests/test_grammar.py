@@ -168,8 +168,80 @@ def test_every_quote_is_a_verbatim_line_of_the_clause(clause_55):
         assert norm(d.source_quote) in {norm(line) for line in clause_55.text.splitlines()}
 
 
-@pytest.mark.parametrize("name", ["sample.md", "sample.html", "sample.docx", "sample.pdf"])
-def test_fixture_declarations_are_harvested_from_every_format(name):
-    """The blocks must survive each reader intact and in order, or block detection fails on them."""
+def _fixture_dumps(name: str) -> list[dict]:
     clause = next(c for c in ingest(str(FIX / name)) if c.id == "5.5")
-    assert [d.name for d in harvest(clause)] == [n for members in FIXTURE_MEMBERS.values() for n in members]
+    return [{**d.model_dump(), "source_quote": norm(d.source_quote)} for d in harvest(clause)]
+
+
+@pytest.mark.parametrize("name", ["sample.html", "sample.docx", "sample.pdf"])
+def test_fixture_declarations_are_harvested_from_every_format(name):
+    """Every attribute, not only the names, must survive each reader, or a handler read the layout."""
+    assert _fixture_dumps(name) == _fixture_dumps("sample.md")
+
+
+CLOSING_LINE = [
+    ("asn1", "Pair ::= SEQUENCE {\n  one INTEGER,\n  two BOOLEAN }", ["one", "two"]),
+    ("cddl", "pair = {\n  one: int,\n  two: tstr }", ["one", "two"]),
+]
+
+
+@pytest.mark.parametrize("notation,text,expected", CLOSING_LINE, ids=[c[0] for c in CLOSING_LINE])
+def test_a_member_sharing_its_line_with_the_closing_bracket_is_read(notation, text, expected):
+    """A declaration may close on its last member's line; that member is still a member."""
+    assert [d["name"] for d in _run(notation, text)] == expected
+
+
+def test_a_member_sharing_its_line_with_the_closing_bracket_keeps_its_type():
+    assert _run("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN", source_quote="two BOOLEAN")
+
+
+ABNF_REJECTED = [
+    "DeviceType = [",                      # a rule head of another notation: the element list does not close
+    "Group = a )",                         # a closer with no opener
+    "Repeat = *",                          # a repetition of nothing: no complete element
+    "x = the device is ready",             # prose: no operator, no literal, no numeric, no declared word
+]
+
+
+@pytest.mark.parametrize("text", ABNF_REJECTED, ids=[t.split(" =")[0] for t in ABNF_REJECTED])
+def test_abnf_rejects_an_element_list_that_is_not_one(text):
+    assert _run("abnf", text) == []
+
+
+def test_abnf_accepts_a_bare_reference_to_a_rule_declared_in_the_same_clause():
+    assert [d["name"] for d in _run("abnf", "alias = target\ntarget = %x41")] == ["alias", "target"]
+
+
+CDDL_COMMENT = """record = {
+  label: tstr,            ; the label as issued
+  ? count: uint .size 2,  ; how many
+}"""
+
+
+def test_a_cddl_comment_does_not_reach_the_type():
+    got = _run("cddl", CDDL_COMMENT)
+    assert [(d["name"], d["type"], d["size"]) for d in got] == [("label", "tstr", None), ("count", "uint", "2")]
+    assert got[0]["source_quote"] == "label: tstr,            ; the label as issued"
+
+
+def test_a_semicolon_inside_a_cddl_literal_is_not_a_comment():
+    assert _run("cddl", 'r = {\n  mode: "a;b",\n}')[0]["value_domain"] == '"a;b"'
+
+
+def test_a_positional_cddl_array_yields_the_structure_itself():
+    """Positional members have no names to emit, so the declaration is kept as one structure object."""
+    assert _run("cddl", "pair = [\n  tstr,\n  int,\n]") == [
+        _draft(name="pair", kind="structure", presence="unspecified", source_quote="pair = [")]
+
+
+def test_an_occurrence_marker_without_a_number_is_written_as_text():
+    """A bare marker is no limit to test; a boundary item built on it would read as nonsense."""
+    got = _run("cddl", "r = {\n  * extra: tstr,\n  + more: int,\n  2*8 some: uint,\n}")
+    assert [d["size"] for d in got] == ["any number of occurrences", "one or more occurrences", "2*8"]
+
+
+def test_only_the_bracket_that_closes_the_declaration_is_stripped_from_a_member():
+    """The member's own constraint ends in a bracket too; cutting that one would break its type."""
+    got = _run("asn1", "One ::= SEQUENCE {\n  name UTF8String (SIZE(1..64)) }")
+    assert got == [_draft(name="name", type="UTF8String", size="1..64",
+                          source_quote="name UTF8String (SIZE(1..64))")]

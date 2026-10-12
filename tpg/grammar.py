@@ -57,18 +57,46 @@ def _blocks(text: str, start_re: re.Pattern) -> list[list[str]]:
     return out
 
 
+def _without_closers(line: str, count: int) -> str:
+    """The line without the `count` brackets at its end that close an enclosing declaration, and
+    without the separators around them. Only those: a bracket closing the member's own constraint
+    belongs to the member."""
+    out = line.rstrip().rstrip(",").rstrip()
+    while count and out and out[-1] in ")]}":
+        out = out[:-1].rstrip().rstrip(",").rstrip()
+        count -= 1
+    return out
+
+
 def _members(lines: list[str]) -> list[str]:
     """The stripped lines of a block that sit directly inside the declaration's outermost bracket and
     open no group of their own. A nested group's members belong to that group, not to this
-    declaration, and the line that opens one is no complete member, so neither is returned."""
+    declaration, and the line that opens one is no complete member, so neither is returned. A
+    declaration may close on its last member's line; that member is returned without the closer."""
     depth = _bracket_delta(lines[0])
     out: list[str] = []
     for line in lines[1:]:
         before, delta = depth, _bracket_delta(line)
         depth += delta
-        if before == 1 and delta == 0:
+        if before != 1:
+            continue
+        if delta == 0:
             out.append(line.strip())
+        elif depth == 0 and (member := _without_closers(line.strip(), -delta)):
+            out.append(member)
     return out
+
+
+def _strip_comment(line: str) -> str:
+    """The line without its trailing comment: in CDDL a ";" outside a text literal starts one
+    (RFC 8610 section 2.1) and the rest of the line is prose about the declaration, not part of it."""
+    quoted = False
+    for i, ch in enumerate(line):
+        if ch == '"' and (i == 0 or line[i - 1] != "\\"):
+            quoted = not quoted
+        elif ch == ";" and not quoted:
+            return line[:i].rstrip()
+    return line
 
 
 def _strip_innermost(text: str, pattern: str) -> str:
@@ -89,6 +117,9 @@ CDDL_MEMBER_RE = re.compile(r"^(?P<occ>\?|\+|\d*\*\d*)?\s*(?P<key>\"[^\"]+\"|[A-
 CDDL_SIZE_RE = re.compile(r"\.size\s*(\([^)]*\)|\S+)")
 CDDL_CONTROL_RE = re.compile(r"\.[a-z]+\s*(?:\([^)]*\)|\S+)")
 CDDL_LITERAL_RE = re.compile(r"\"[^\"]*\"|-?\d+(?:\.\d+)?|true|false|null|h'[0-9a-fA-F]*'")
+# an occurrence indicator carrying no number states no limit, so it is written out rather than left
+# as a marker: a boundary case derived from "*" would read as nonsense
+OCCURRENCE_TEXT = {"*": "any number of occurrences", "+": "one or more occurrences"}
 
 
 def cddl_detect(text: str) -> list[str]:
@@ -96,13 +127,18 @@ def cddl_detect(text: str) -> list[str]:
 
 
 def cddl_parse(block: str) -> list[TestObjectDraft]:
+    """One draft per named member. A member whose line the parser cannot read contributes nothing,
+    and positional members have no name to emit at all: an array declaration none of whose members
+    is named yields one `structure` draft for the declaration itself, so it is not lost, and the
+    positions it holds are not objects. Which position holds what is a nesting the object model does
+    not carry (D29)."""
     lines = block.splitlines()
     rule = CDDL_RULE_RE.match(lines[0].strip())
     if not rule:
         return []
     out: list[TestObjectDraft] = []
     for quote in _members(lines):
-        m = CDDL_MEMBER_RE.match(quote)
+        m = CDDL_MEMBER_RE.match(_strip_comment(quote))
         if not m:
             continue
         occ = m.group("occ") or ""
@@ -118,7 +154,7 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
                 size = f"{mr.group(1)}..{mr.group(2)}"
                 type_text = RANGE_RE.sub("", type_text).strip()
         if size is None and occ and occ != "?":
-            size = occ                     # an occurrence indicator is a count constraint
+            size = OCCURRENCE_TEXT.get(occ, occ)   # an occurrence indicator is a count constraint
         value_domain = None
         alts = [a.strip() for a in type_text.split("/") if a.strip()]
         if alts and all(CDDL_LITERAL_RE.fullmatch(a) for a in alts):
@@ -128,6 +164,9 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
                                    presence="optional" if occ == "?" else "mandatory",
                                    type=type_text or None, value_domain=value_domain, size=size,
                                    relations=[f"member of {rule.group(1)}"], source_quote=quote))
+    if not out and lines[0].rstrip().endswith("["):
+        out.append(TestObjectDraft(name=rule.group(1), kind="structure", presence="unspecified",
+                                   source_quote=lines[0].strip()))
     return out
 
 
@@ -140,30 +179,69 @@ ABNF_ELEMENTS_RE = re.compile(r"^(?:\"[^\"]*\"|%[bdx][0-9A-Fa-f]+(?:[.-][0-9A-Fa
 ABNF_REPEAT_RE = re.compile(r"\d+\*\d*|\d*\*\d+")
 ABNF_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 ABNF_QUOTED_RE = re.compile(r"\"[^\"]*\"")
+ABNF_NUMERIC_RE = re.compile(r"%[bdx][0-9A-Fa-f]+(?:[.-][0-9A-Fa-f]+)*")
+ABNF_OPERATOR_RE = re.compile(r"[*/()\[\]]")
 
 
 def abnf_detect(text: str) -> list[str]:
-    """One block holding every rule line of the text: an optional group in one rule is what makes a
-    rule defined elsewhere optional, so the rules have to be read together."""
-    rules = [line.strip() for line in text.splitlines() if _abnf_rule(line.strip())]
-    return ["\n".join(rules)] if rules else []
+    """One block holding every line of the text shaped like a rule: an optional group in one rule is
+    what makes a rule defined elsewhere optional, and a bare reference is an element list only if the
+    rule it names is declared here, so the rules have to be read together. Detection is the shape
+    alone; `abnf_parse` is the acceptance gate."""
+    lines = [line.strip() for line in text.splitlines() if ABNF_RULE_RE.match(line.strip())]
+    return ["\n".join(lines)] if lines else []
 
 
-def _abnf_rule(line: str) -> tuple[str, str] | None:
+def _bare_names(elements: str) -> list[str]:
+    """The rule names an element list references: its words outside its text and numeric values."""
+    return ABNF_NAME_RE.findall(ABNF_NUMERIC_RE.sub(" ", ABNF_QUOTED_RE.sub(" ", elements)))
+
+
+def _balanced(elements: str) -> bool:
+    depth = 0
+    for ch in ABNF_QUOTED_RE.sub(" ", elements):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _abnf_rule(line: str, declared: set[str]) -> tuple[str, str] | None:
+    """The rule a line declares, or None. A line passes only if its element list is one: made of
+    nothing but the constructs of RFC 5234, with its groups and options closed, with at least one
+    complete element in it, and either carrying a construct of the notation - a repetition, an
+    alternation, a group, a text value, a numeric value - or referencing rule names that this same
+    text declares. Without a construct and without a declared reference, a sentence carrying an
+    equals sign would be an element list of bare words, and a rule head of another notation an
+    element list of one bracket."""
     m = ABNF_RULE_RE.match(line)
-    if not m or not ABNF_ELEMENTS_RE.match(m.group("elements")):
+    if not m:
         return None
-    return m.group("name"), m.group("elements").strip()
+    elements = m.group("elements").strip()
+    names = _bare_names(elements)
+    terminal = ABNF_QUOTED_RE.search(elements) or ABNF_NUMERIC_RE.search(elements)
+    if not ABNF_ELEMENTS_RE.match(elements) or not _balanced(elements):
+        return None
+    if not (names or terminal):
+        return None
+    if not (terminal or ABNF_OPERATOR_RE.search(elements) or all(n in declared for n in names)):
+        return None
+    return m.group("name"), elements
 
 
 def abnf_parse(block: str) -> list[TestObjectDraft]:
-    rules = [(*r, line.strip()) for line in block.splitlines() if (r := _abnf_rule(line.strip()))]
+    lines = [line.strip() for line in block.splitlines()]
+    declared = {m.group("name") for line in lines if (m := ABNF_RULE_RE.match(line))}
+    rules = [(*r, line) for line in lines if (r := _abnf_rule(line, declared))]
     required: set[str] = set()
     bracketed: set[str] = set()
     for _, elements, _quote in rules:
         outside = _strip_innermost(elements, r"\[[^\[\]]*\]")
-        required |= set(ABNF_NAME_RE.findall(ABNF_QUOTED_RE.sub(" ", outside)))
-        bracketed |= set(ABNF_NAME_RE.findall(ABNF_QUOTED_RE.sub(" ", elements)))
+        required |= set(_bare_names(outside))
+        bracketed |= set(_bare_names(elements))
     out: list[TestObjectDraft] = []
     for name, elements, quote in rules:
         presence = "mandatory" if name in required else ("optional" if name in bracketed else "unspecified")

@@ -64,20 +64,42 @@ def check_object(clause: Clause, n: int, d: TestObjectDraft) -> str | None:
     return None
 
 
-def merge_objects(drafts: list[TestObjectDraft]) -> list[TestObjectDraft]:
-    """Same name (case-insensitive) within a clause: keep the first, fill its unset attributes from later ones."""
+MEMBER_OF = "member of "
+
+
+def _scope(d: TestObjectDraft) -> str:
+    """The declaration this draft belongs to, as the grammar handler recorded it in `relations`."""
+    return next((norm(r)[len(MEMBER_OF):] for r in d.relations if norm(r).startswith(MEMBER_OF)), "")
+
+
+def _at(body: str, quote: str) -> int:
+    """Where a quote sits in the clause text; an ungrounded quote sorts last instead of raising."""
+    i = body.find(norm(quote))
+    return i if i >= 0 else len(body)
+
+
+def merge_objects(drafts: list[TestObjectDraft], ambiguous: set[str] | frozenset = frozenset()) -> list[TestObjectDraft]:
+    """Same name (case-insensitive) and same enclosing declaration within a clause: keep the first,
+    fill its unset attributes from later ones. A draft that names no declaration still merges into
+    the one draft of that name, unless the name is `ambiguous` - more than one declaration of the
+    clause uses it, so which member the draft describes is unknown and merging would state one
+    member's type, values or size on another."""
     out: list[TestObjectDraft] = []
-    by_name: dict[str, TestObjectDraft] = {}
+    by_key: dict[tuple[str, str], TestObjectDraft] = {}
     for d in drafts:
-        key = norm(d.name)
-        if key not in by_name:
-            by_name[key] = d
+        key = (norm(d.name), _scope(d))
+        first = by_key.get(key)
+        if first is None and key[0] not in ambiguous:
+            first = next((o for o in out if norm(o.name) == key[0]), None)
+        if first is None:
+            by_key[key] = d
             out.append(d)
             continue
-        first = by_name[key]
         for f in ("condition", "type", "value_domain", "size"):
             if getattr(first, f) is None and getattr(d, f) is not None:
                 setattr(first, f, getattr(d, f))
+        if not first.applies_when and d.applies_when:
+            first.applies_when = list(d.applies_when)
         if first.presence == "unspecified" and d.presence != "unspecified":
             first.presence = d.presence
         if first.direction == "internal" and d.direction != "internal":
@@ -130,13 +152,16 @@ def _recover_rows(clause: Clause, llm, accepted: list[TestObjectDraft], attempts
 
 def assemble(clause: Clause, grammar: list[TestObjectDraft], prose: list[TestObjectDraft]) -> list[TestObject]:
     """One clause's objects: the grammar drafts first, so a same-named prose draft only fills what the
-    declaration left unset, then numbered in the order their quotes appear in the clause."""
-    from_grammar = {id(d) for d in grammar}
-    merged = merge_objects(grammar + prose)
+    declaration left unset, then numbered in the order their quotes appear in the clause. A name two
+    declarations of the clause both use is ambiguous, and no prose draft is folded into it."""
+    declared = {(norm(d.name), norm(d.source_quote)) for d in grammar}
+    names = [norm(d.name) for d in grammar]
+    merged = merge_objects(grammar + prose, {n for n in names if names.count(n) > 1})
     body = norm(clause.text)
-    ordered = sorted(merged, key=lambda d: body.index(norm(d.source_quote)))
+    ordered = sorted(merged, key=lambda d: _at(body, d.source_quote))
     return [TestObject(id=f"OBJ-{clause.id}-{n}", clause_id=clause.id,
-                       origin="grammar" if id(d) in from_grammar else "prose", **d.model_dump())
+                       origin="grammar" if (norm(d.name), norm(d.source_quote)) in declared else "prose",
+                       **d.model_dump())
             for n, d in enumerate(ordered, 1)]
 
 

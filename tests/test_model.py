@@ -1,7 +1,8 @@
 from tpg.extract import chunks
 from tpg.grammar import harvest
 from tpg.llm import LLMError
-from tpg.model import build_model_prompt, check_object, extract_objects, extract_objects_clause, has_rows, merge_objects
+from tpg.model import (assemble, build_model_prompt, check_object, extract_objects, extract_objects_clause,
+                       has_rows, merge_objects)
 from tpg.models import Clause, TestObjectDraft
 
 CLAUSE = Clause(id="5.4", title="Request parameters",
@@ -171,3 +172,45 @@ def test_extract_objects_includes_a_clause_that_only_declares_a_structure(fake_l
     llm = fake_llm([])
     objs, gaps = extract_objects([DECL], llm, grammar={"7": harvest(DECL)})
     assert gaps == [] and llm.prompts == [] and [(o.name, o.origin) for o in objs] == [("label", "grammar")]
+
+
+TWO = Clause(id="8", title="Two structures",
+             text="first = {\nitem: tstr,\n}\nsecond = {\nitem: uint,\n}\nThe item shall be unique.")
+PROSE_ITEM = {"name": "item", "kind": "field", "direction": "received", "presence": "mandatory",
+              "value_domain": "unique", "source_quote": "The item shall be unique."}
+
+
+def test_two_structures_declaring_the_same_member_stay_two_objects():
+    """The member of one structure is not the member of another, even under the same name."""
+    objs = assemble(TWO, harvest(TWO), [])
+    assert [(o.name, o.type, o.relations) for o in objs] == [("item", "tstr", ["member of first"]),
+                                                             ("item", "uint", ["member of second"])]
+
+
+def test_prose_does_not_fill_a_grammar_name_that_is_ambiguous_in_the_clause():
+    """Which of the two declared members the sentence means is unknown, so it stays its own object."""
+    objs = assemble(TWO, harvest(TWO), [TestObjectDraft(**PROSE_ITEM)])
+    assert [(o.name, o.origin, o.value_domain) for o in objs] == [
+        ("item", "grammar", None), ("item", "grammar", None), ("item", "prose", "unique")]
+
+
+DECL_OTHER = Clause(id="7", title="Declarations", text=DECL.text + "\nThe status shall be reported.")
+
+
+def test_a_prose_object_of_another_name_joins_the_declaration():
+    prose = TestObjectDraft(name="status", kind="field", direction="produced", presence="mandatory",
+                            source_quote="The status shall be reported.")
+    objs = assemble(DECL_OTHER, harvest(DECL_OTHER), [prose])
+    assert [(o.id, o.name, o.origin) for o in objs] == [("OBJ-7-1", "label", "grammar"), ("OBJ-7-2", "status", "prose")]
+
+
+def test_assemble_sorts_an_ungrounded_quote_last_instead_of_raising():
+    ghost = TestObjectDraft(name="ghost", kind="field", direction="internal", presence="unspecified",
+                            source_quote="this sentence is not in the clause")
+    assert [o.name for o in assemble(DECL, harvest(DECL), [ghost])] == ["label", "ghost"]
+
+
+def test_merge_objects_fills_applies_when():
+    a = TestObjectDraft(**NONCE)
+    b = TestObjectDraft(**{**NONCE, "applies_when": ["when the reader supports it"]})
+    assert merge_objects([a, b])[0].applies_when == ["when the reader supports it"]
