@@ -24,12 +24,20 @@ def _run(notation: str, text: str) -> list[dict]:
     return [d.model_dump() for block in detect(text) for d in parse(block)]
 
 
+def _members(notation: str, text: str) -> list[dict]:
+    """One block's drafts after the first: the declaration object the handler emits for the named
+    block itself, which `test_a_named_cddl_declaration_yields_the_structure_itself` and its ASN.1 and
+    JSON Schema twins pin in full, is not what these cases are about."""
+    return _run(notation, text)[1:]
+
+
 CDDL = """record = {
   label: tstr .size (1..32),
   ? count: uint,
   mode: "fast" / "slow",
 }"""
 CDDL_EXPECTED = [
+    _draft(name="record", kind="structure", presence="unspecified", type="map", source_quote="record = {"),
     _draft(name="label", type="tstr", size="1..32", relations=["member of record"],
            source_quote="label: tstr .size (1..32),"),
     _draft(name="count", presence="optional", type="uint", relations=["member of record"],
@@ -71,6 +79,8 @@ ASN1 = """Entry ::= SEQUENCE {
   note UTF8String OPTIONAL
 }"""
 ASN1_EXPECTED = [
+    _draft(name="Entry", kind="structure", presence="unspecified", type="SEQUENCE",
+           source_quote="Entry ::= SEQUENCE {"),
     _draft(name="name", type="UTF8String", size="1..64", relations=["member of Entry"],
            source_quote="name UTF8String (SIZE(1..64)),"),
     _draft(name="state", type="INTEGER", value_domain="idle(0), busy(1)", relations=["member of Entry"],
@@ -106,8 +116,8 @@ def test_malformed_block_yields_nothing_and_raises_nothing(notation, text):
 
 
 NESTED = [
-    ("cddl", "outer = {\n  inner: {\n    a: int,\n  },\n  b: tstr,\n}", ["b"]),
-    ("asn1", "Nest ::= SEQUENCE {\n  one SEQUENCE {\n    deep INTEGER\n  },\n  two BOOLEAN\n}", ["two"]),
+    ("cddl", "outer = {\n  inner: {\n    a: int,\n  },\n  b: tstr,\n}", ["outer", "b"]),
+    ("asn1", "Nest ::= SEQUENCE {\n  one SEQUENCE {\n    deep INTEGER\n  },\n  two BOOLEAN\n}", ["Nest", "two"]),
 ]
 
 
@@ -131,14 +141,17 @@ def test_harvest_without_a_formal_block_returns_nothing():
 
 def test_harvest_deduplicates_by_name_and_quote():
     clause = Clause(id="9", title="Twice", text=CDDL + "\n" + CDDL)
-    assert [d.name for d in harvest(clause)] == ["label", "count", "mode"]
+    assert [d.name for d in harvest(clause)] == ["record", "label", "count", "mode"]
 
 
-FIXTURE_MEMBERS = {
-    "cddl": ["label", "count", "mode"],
+# the declaration object of a named block, then its members. The ABNF rules are themselves the
+# declarations RFC 5234 section 2.2 names, and the fixture's JSON Schema carries no `$id`, so those
+# two notations contribute no extra object here.
+FIXTURE_OBJECTS = {
+    "cddl": ["record", "label", "count", "mode"],
     "abnf": ["token", "prefix", "suffix"],
     "json_schema": ["key", "flag"],
-    "asn1": ["name", "state", "note"],
+    "asn1": ["Entry", "name", "state", "note"],
 }
 
 
@@ -149,12 +162,12 @@ def clause_55() -> Clause:
 
 def test_harvest_reads_all_four_notations_of_the_fixture_clause(clause_55):
     names = [d.name for d in harvest(clause_55)]
-    assert names == [n for members in FIXTURE_MEMBERS.values() for n in members]
+    assert names == [n for objects in FIXTURE_OBJECTS.values() for n in objects]
 
 
-@pytest.mark.parametrize("notation", list(FIXTURE_MEMBERS))
-def test_fixture_clause_member_inventory_per_notation(notation, clause_55):
-    assert [d.name for d in _run_drafts(notation, clause_55.text)] == FIXTURE_MEMBERS[notation]
+@pytest.mark.parametrize("notation", list(FIXTURE_OBJECTS))
+def test_fixture_clause_object_inventory_per_notation(notation, clause_55):
+    assert [d.name for d in _run_drafts(notation, clause_55.text)] == FIXTURE_OBJECTS[notation]
 
 
 def _run_drafts(notation: str, text: str):
@@ -182,8 +195,8 @@ def test_fixture_declarations_are_harvested_from_every_format(name):
 
 
 CLOSING_LINE = [
-    ("asn1", "Pair ::= SEQUENCE {\n  one INTEGER,\n  two BOOLEAN }", ["one", "two"]),
-    ("cddl", "pair = {\n  one: int,\n  two: tstr }", ["one", "two"]),
+    ("asn1", "Pair ::= SEQUENCE {\n  one INTEGER,\n  two BOOLEAN }", ["Pair", "one", "two"]),
+    ("cddl", "pair = {\n  one: int,\n  two: tstr }", ["pair", "one", "two"]),
 ]
 
 
@@ -194,7 +207,7 @@ def test_a_member_sharing_its_line_with_the_closing_bracket_is_read(notation, te
 
 
 def test_a_member_sharing_its_line_with_the_closing_bracket_keeps_its_type():
-    assert _run("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN",
+    assert _members("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN",
                                                          relations=["member of Pair"], source_quote="two BOOLEAN")
 
 
@@ -222,30 +235,31 @@ CDDL_COMMENT = """record = {
 
 
 def test_a_cddl_comment_does_not_reach_the_type():
-    got = _run("cddl", CDDL_COMMENT)
+    got = _members("cddl", CDDL_COMMENT)
     assert [(d["name"], d["type"], d["size"]) for d in got] == [("label", "tstr", None), ("count", "uint", "2")]
     assert got[0]["source_quote"] == "label: tstr,            ; the label as issued"
 
 
 def test_a_semicolon_inside_a_cddl_literal_is_not_a_comment():
-    assert _run("cddl", 'r = {\n  mode: "a;b",\n}')[0]["value_domain"] == '"a;b"'
+    assert _members("cddl", 'r = {\n  mode: "a;b",\n}')[0]["value_domain"] == '"a;b"'
 
 
 def test_a_positional_cddl_array_yields_the_structure_itself():
     """Positional members have no names to emit, so the declaration is kept as one structure object."""
     assert _run("cddl", "pair = [\n  tstr,\n  int,\n]") == [
-        _draft(name="pair", kind="structure", presence="unspecified", source_quote="pair = [")]
+        _draft(name="pair", kind="structure", presence="unspecified", type="array",
+               source_quote="pair = [")]
 
 
 def test_an_occurrence_marker_without_a_number_is_written_as_text():
     """A bare marker is no limit to test; a boundary item built on it would read as nonsense."""
-    got = _run("cddl", "r = {\n  * extra: tstr,\n  + more: int,\n  2*8 some: uint,\n}")
+    got = _members("cddl", "r = {\n  * extra: tstr,\n  + more: int,\n  2*8 some: uint,\n}")
     assert [d["size"] for d in got] == ["any number of occurrences", "one or more occurrences", "2*8"]
 
 
 def test_only_the_bracket_that_closes_the_declaration_is_stripped_from_a_member():
     """The member's own constraint ends in a bracket too; cutting that one would break its type."""
-    got = _run("asn1", "One ::= SEQUENCE {\n  name UTF8String (SIZE(1..64)) }")
+    got = _members("asn1", "One ::= SEQUENCE {\n  name UTF8String (SIZE(1..64)) }")
     assert got == [_draft(name="name", type="UTF8String", size="1..64", relations=["member of One"],
                           source_quote="name UTF8String (SIZE(1..64))")]
 
@@ -255,7 +269,8 @@ def test_an_asn1_member_records_the_type_it_belongs_to():
     the declaration the handler names here."""
     text = "One ::= SEQUENCE {\n  item INTEGER\n}\nTwo ::= SEQUENCE {\n  item BOOLEAN\n}"
     assert [(d["name"], d["type"], d["relations"]) for d in _run("asn1", text)] == [
-        ("item", "INTEGER", ["member of One"]), ("item", "BOOLEAN", ["member of Two"])]
+        ("One", "SEQUENCE", []), ("item", "INTEGER", ["member of One"]),
+        ("Two", "SEQUENCE", []), ("item", "BOOLEAN", ["member of Two"])]
 
 
 # --- constraint harvesting per notation: value domains and sizes ---------------------------------
@@ -275,31 +290,31 @@ CDDL_VALUE_CONTROLS = [
 @pytest.mark.parametrize("type_text,expected", CDDL_VALUE_CONTROLS, ids=[t.split()[1] for t, _ in CDDL_VALUE_CONTROLS])
 def test_a_cddl_value_control_operator_becomes_the_value_domain(type_text, expected):
     """RFC 8610 section 3.8.2 and 3.8.3: these operators bound the value, not the encoded length."""
-    got = _run("cddl", "r = {\n  item: %s,\n}" % type_text)
+    got = _members("cddl", "r = {\n  item: %s,\n}" % type_text)
     assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [(expected, None, type_text.split()[0])]
 
 
 def test_a_cddl_size_control_is_a_size_and_not_a_value_domain():
     """RFC 8610 section 3.8.1: `.size` bounds the encoded length, so it states no domain of values."""
-    got = _run("cddl", "r = {\n  item: bstr .size (4..8),\n}")
+    got = _members("cddl", "r = {\n  item: bstr .size (4..8),\n}")
     assert [(d["value_domain"], d["size"]) for d in got] == [(None, "4..8")]
 
 
 def test_a_bare_cddl_range_is_both_a_value_domain_and_a_size():
     """RFC 8610 section 2.2.2: a range is a range of values, so it is a domain to violate and a pair
     of bounds to probe at the same time."""
-    got = _run("cddl", "r = {\n  item: 1..32,\n}")
+    got = _members("cddl", "r = {\n  item: 1..32,\n}")
     assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [("1..32", "1..32", None)]
 
 
 def test_a_bounded_occurrence_inside_a_cddl_type_becomes_a_size():
-    got = _run("cddl", "r = {\n  item: [2*4 tstr],\n}")
+    got = _members("cddl", "r = {\n  item: [2*4 tstr],\n}")
     assert [(d["size"], d["type"]) for d in got] == [("2*4", "[2*4 tstr]")]
 
 
 def test_a_cddl_group_choice_marker_does_not_reach_the_type():
     """RFC 8610 section 2.2.2: `//` separates the branches of a group choice; it is not part of a type."""
-    got = _run("cddl", "r = {\n  one: tstr, //\n  two: uint\n}")
+    got = _members("cddl", "r = {\n  one: tstr, //\n  two: uint\n}")
     assert [(d["name"], d["type"]) for d in got] == [("one", "tstr"), ("two", "uint")]
 
 
@@ -314,7 +329,7 @@ Tagged = #6.24(bstr .cbor Inner)"""
 def test_a_single_line_cddl_rule_declares_a_named_type():
     """RFC 8610 section 3.1: a rule whose right-hand side is a bare type assigns that type to the
     name. It declares the name, so it yields one object; nothing states whether it must appear."""
-    assert _run("cddl", CDDL_SINGLE)[1:] == [
+    assert _run("cddl", CDDL_SINGLE)[2:] == [
         _draft(name="Inner", kind="structure", presence="unspecified", type="tstr",
                source_quote="Inner = tstr"),
         _draft(name="Bounded", kind="structure", presence="unspecified", type="bstr", size="32",
@@ -334,7 +349,8 @@ CDDL_NOT_A_RULE = [
 
 @pytest.mark.parametrize("line", CDDL_NOT_A_RULE, ids=[l.split(" =")[0][:12] for l in CDDL_NOT_A_RULE])
 def test_a_line_that_is_not_a_cddl_type_assignment_yields_no_object(line):
-    assert [d["name"] for d in _run("cddl", CDDL_SINGLE + "\n" + line)] == ["inner", "Inner", "Bounded", "Tagged"]
+    assert [d["name"] for d in _run("cddl", CDDL_SINGLE + "\n" + line)] == \
+        ["Outer", "inner", "Inner", "Bounded", "Tagged"]
 
 
 def test_a_single_line_cddl_rule_needs_the_notation_in_evidence():
@@ -345,13 +361,14 @@ def test_a_single_line_cddl_rule_needs_the_notation_in_evidence():
 
 def test_a_type_keyed_cddl_entry_yields_no_field():
     """RFC 8610 section 3.5.1: the key before `=>` is a type, so it names no field of the map."""
-    assert [d["name"] for d in _run("cddl", "r = {\n  * tstr => any,\n  \"named\" => uint,\n}")] == ["named"]
+    assert [d["name"] for d in _run("cddl", "r = {\n  * tstr => any,\n  \"named\" => uint,\n}")] == ["r", "named"]
 
 
 def test_a_map_of_only_type_keyed_entries_yields_the_structure_itself():
     """The entries name no field, but the declaration still declares the map, so it is not lost."""
     assert _run("cddl", "Index = {\n  + tstr => any\n}") == [
-        _draft(name="Index", kind="structure", presence="unspecified", source_quote="Index = {")]
+        _draft(name="Index", kind="structure", presence="unspecified", type="map",
+               source_quote="Index = {")]
 
 
 def test_abnf_numeric_value_alternatives_are_a_value_domain():
@@ -383,19 +400,19 @@ JSON_BOUNDS = """{
 
 
 def test_json_schema_numeric_bounds_are_a_value_domain():
-    got = {d["name"]: d["value_domain"] for d in _run("json_schema", JSON_BOUNDS)}
+    got = {d["name"]: d["value_domain"] for d in _members("json_schema", JSON_BOUNDS)}
     assert got == {"amount": "minimum 1, maximum 99, multipleOf 3",
                    "ratio": "exclusiveMinimum 0, exclusiveMaximum 1", "bag": None}
 
 
 def test_json_schema_counts_are_a_size():
-    got = {d["name"]: d["size"] for d in _run("json_schema", JSON_BOUNDS)}
+    got = {d["name"]: d["size"] for d in _members("json_schema", JSON_BOUNDS)}
     assert got == {"amount": "minimum 1, maximum 99", "ratio": None, "bag": "minProperties 1, maxProperties 4"}
 
 
 def test_json_schema_keys_the_merge_on_the_schema_id():
     """A schema has no declaration name in the notation except `$id`, which identifies the schema."""
-    assert [d["relations"] for d in _run("json_schema", JSON_BOUNDS)] == \
+    assert [d["relations"] for d in _members("json_schema", JSON_BOUNDS)] == \
         [["member of https://example.invalid/schema"]] * 3
 
 
@@ -409,7 +426,7 @@ ASN1_CONSTRAINED = """Spec ::= SEQUENCE {
 def test_asn1_value_constraints_become_the_value_domain():
     """X.680 clause 51: a permitted-alphabet, a pattern and a value range each bound the value; only
     the range is also a pair of bounds to probe, and SIZE is a length, never a value."""
-    got = [(d["name"], d["type"], d["value_domain"], d["size"]) for d in _run("asn1", ASN1_CONSTRAINED)]
+    got = [(d["name"], d["type"], d["value_domain"], d["size"]) for d in _members("asn1", ASN1_CONSTRAINED)]
     assert got == [("alpha", "PrintableString", 'FROM ("0".."9")', None),
                    ("shape", "PrintableString", 'PATTERN "[0-9]{4}"', None),
                    ("count", "INTEGER", "1..100", "1..100")]
@@ -438,3 +455,75 @@ def test_every_notation_can_state_a_value_domain_and_a_numeric_size():
     assert {d.name for d in drafts if d.value_domain} == {"age", "score", "Cap", "digit", "amount", "count"}
     assert {d.name for d in drafts if d.size and any(c.isdigit() for c in d.size)} == \
         {"age", "hex", "digit", "amount", "count"}
+
+
+# --- the named block itself: one object per declaration, typed by its declaring construct --------
+
+CDDL_CONSTRUCTS = [("{", "map"), ("[", "array"), ("(", "group")]
+
+
+@pytest.mark.parametrize("bracket,type_text", CDDL_CONSTRUCTS, ids=[t for _, t in CDDL_CONSTRUCTS])
+def test_a_named_cddl_declaration_yields_the_structure_itself(bracket, type_text):
+    """RFC 8610 section 2.1: braces enclose a map, square brackets an array, parentheses a group. The
+    bracket the assignment opens is what says which of the three the name denotes, so it is the type
+    of the structure object. The members keep their own objects; this one is the block."""
+    closer = {"{": "}", "[": "]", "(": ")"}[bracket]
+    got = _run("cddl", "Top = %s\n  item: tstr,\n%s" % (bracket, closer))
+    assert got == [_draft(name="Top", kind="structure", presence="unspecified", type=type_text,
+                          source_quote="Top = " + bracket),
+                   _draft(name="item", type="tstr", relations=["member of Top"],
+                          source_quote="item: tstr,")]
+
+
+ASN1_CONSTRUCTS = ["SEQUENCE", "SET", "CHOICE"]
+
+
+@pytest.mark.parametrize("construct", ASN1_CONSTRUCTS)
+def test_a_named_asn1_declaration_yields_the_structure_itself(construct):
+    """X.680 clauses 25, 27 and 29: the construct keyword after `::=` is the type the name denotes,
+    written as the notation writes it."""
+    got = _run("asn1", "Top ::= %s {\n  item INTEGER\n}" % construct)
+    assert got[0] == _draft(name="Top", kind="structure", presence="unspecified", type=construct,
+                            source_quote="Top ::= %s {" % construct)
+    assert [d["name"] for d in got] == ["Top", "item"]
+
+
+def test_an_abnf_rule_is_already_the_structure_it_declares():
+    """RFC 5234 section 2.2: a rule *is* the named block, and its element list is its definition, so
+    the ABNF handler needs no second object for it. Pinned so the symmetry is not lost."""
+    got = _run("abnf", 'token = prefix 1*8ALPHA\nprefix = "x"')
+    assert [(d["name"], d["kind"], d["type"]) for d in got] == [
+        ("token", "structure", "prefix 1*8ALPHA"), ("prefix", "structure", '"x"')]
+
+
+JSON_IDENTIFIED = """{
+  "$id": "https://example.invalid/schema",
+  "type": "object",
+  "properties": {"key": {"type": "string"}}
+}"""
+
+
+def test_a_json_schema_declaration_yields_the_structure_only_where_it_has_an_id():
+    """JSON Schema 2020-12 core section 8.2.1: `$id` is the only name the notation gives a schema. A
+    schema without one declares no name, so no structure object is invented for it."""
+    got = _run("json_schema", JSON_IDENTIFIED)
+    assert got[0] == _draft(name="https://example.invalid/schema", kind="structure", presence="unspecified",
+                            type="object", source_quote='"$id": "https://example.invalid/schema",')
+    assert [d["name"] for d in got] == ["https://example.invalid/schema", "key"]
+    assert [d["name"] for d in _run("json_schema", JSON_SCHEMA)] == ["key", "flag"]
+
+
+def test_a_structure_object_states_no_member_in_its_relations():
+    """A member already records the edge as `member of X`, in the direction that is a testable
+    statement. Repeating it on the block would mint one `consistency` item per member whose purpose
+    is the member's own presence item, and would key the generic group on the member list twice."""
+    got = _run("cddl", "Top = {\n  one: tstr,\n  two: uint,\n}")
+    assert got[0]["relations"] == [] and [d["relations"] for d in got[1:]] == [["member of Top"]] * 2
+
+
+def test_the_structure_quote_is_the_declaring_line_and_not_the_whole_block():
+    """D24 requires the quote to be verbatim clause text; a whole block is a quote a plan page cannot
+    print and a provenance comparison cannot use."""
+    for notation, text, _ in WELL_FORMED:
+        for d in _run(notation, text):
+            assert "\n" not in d["source_quote"]

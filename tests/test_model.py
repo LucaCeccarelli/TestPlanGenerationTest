@@ -150,15 +150,16 @@ def test_grammar_drafts_are_kept_and_tagged_grammar(fake_llm):
     llm = fake_llm([])          # no candidates and no rows: the LLM must not be called at all
     objs, gap = extract_objects_clause(DECL, llm, grammar=harvest(DECL))
     assert gap is None and llm.prompts == []
-    assert [(o.id, o.name, o.origin, o.type) for o in objs] == [("OBJ-7-1", "label", "grammar", "tstr")]
+    assert [(o.id, o.name, o.origin, o.type) for o in objs] == [
+        ("OBJ-7-1", "record", "grammar", "map"), ("OBJ-7-2", "label", "grammar", "tstr")]
 
 
 def test_prose_fills_an_attribute_the_grammar_left_unset(fake_llm):
     prose = {"name": "label", "kind": "field", "direction": "received", "presence": "mandatory",
              "value_domain": "unique within a record", "source_quote": "label: tstr,"}
     objs, gap = extract_objects_clause(DECL_PROSE, fake_llm([{"objects": [prose]}]), grammar=harvest(DECL_PROSE))
-    assert gap is None and len(objs) == 1
-    o = objs[0]
+    assert gap is None and [o.name for o in objs] == ["record", "label"]
+    o = objs[1]
     assert (o.origin, o.type, o.direction, o.value_domain) == ("grammar", "tstr", "received", "unique within a record")
 
 
@@ -171,7 +172,8 @@ def test_grammar_names_reach_the_model_prompt(fake_llm):
 def test_extract_objects_includes_a_clause_that_only_declares_a_structure(fake_llm):
     llm = fake_llm([])
     objs, gaps = extract_objects([DECL], llm, grammar={"7": harvest(DECL)})
-    assert gaps == [] and llm.prompts == [] and [(o.name, o.origin) for o in objs] == [("label", "grammar")]
+    assert gaps == [] and llm.prompts == []
+    assert [(o.name, o.origin) for o in objs] == [("record", "grammar"), ("label", "grammar")]
 
 
 TWO = Clause(id="8", title="Two structures",
@@ -183,7 +185,9 @@ PROSE_ITEM = {"name": "item", "kind": "field", "direction": "received", "presenc
 def test_two_structures_declaring_the_same_member_stay_two_objects():
     """The member of one structure is not the member of another, even under the same name."""
     objs = assemble(TWO, harvest(TWO), [])
-    assert [(o.name, o.type, o.relations) for o in objs] == [("item", "tstr", ["member of first"]),
+    assert [(o.name, o.type, o.relations) for o in objs] == [("first", "map", []),
+                                                             ("item", "tstr", ["member of first"]),
+                                                             ("second", "map", []),
                                                              ("item", "uint", ["member of second"])]
 
 
@@ -191,7 +195,8 @@ def test_prose_does_not_fill_a_grammar_name_that_is_ambiguous_in_the_clause():
     """Which of the two declared members the sentence means is unknown, so it stays its own object."""
     objs = assemble(TWO, harvest(TWO), [TestObjectDraft(**PROSE_ITEM)])
     assert [(o.name, o.origin, o.value_domain) for o in objs] == [
-        ("item", "grammar", None), ("item", "grammar", None), ("item", "prose", "unique")]
+        ("first", "grammar", None), ("item", "grammar", None), ("second", "grammar", None),
+        ("item", "grammar", None), ("item", "prose", "unique")]
 
 
 DECL_OTHER = Clause(id="7", title="Declarations", text=DECL.text + "\nThe status shall be reported.")
@@ -201,13 +206,15 @@ def test_a_prose_object_of_another_name_joins_the_declaration():
     prose = TestObjectDraft(name="status", kind="field", direction="produced", presence="mandatory",
                             source_quote="The status shall be reported.")
     objs = assemble(DECL_OTHER, harvest(DECL_OTHER), [prose])
-    assert [(o.id, o.name, o.origin) for o in objs] == [("OBJ-7-1", "label", "grammar"), ("OBJ-7-2", "status", "prose")]
+    assert [(o.id, o.name, o.origin) for o in objs] == [("OBJ-7-1", "record", "grammar"),
+                                                        ("OBJ-7-2", "label", "grammar"),
+                                                        ("OBJ-7-3", "status", "prose")]
 
 
 def test_assemble_sorts_an_ungrounded_quote_last_instead_of_raising():
     ghost = TestObjectDraft(name="ghost", kind="field", direction="internal", presence="unspecified",
                             source_quote="this sentence is not in the clause")
-    assert [o.name for o in assemble(DECL, harvest(DECL), [ghost])] == ["label", "ghost"]
+    assert [o.name for o in assemble(DECL, harvest(DECL), [ghost])] == ["record", "label", "ghost"]
 
 
 def test_merge_objects_fills_applies_when():

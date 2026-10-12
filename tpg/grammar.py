@@ -102,6 +102,32 @@ def _strip_comment(line: str) -> str:
     return line
 
 
+def _declaration(name: str, type_text: str | None, quote: str) -> TestObjectDraft:
+    """The named block itself, as one object beside the objects of its members.
+
+    A standard's top-level structures are what a conformance test case names as the thing under
+    check far more often than any one member, so a declaration that exists as no object can never be
+    matched and its own ladder - presence, encoding validity and invalidity, consistency - is never
+    derived. Four rulings, one per attribute:
+
+    - `kind="structure"`: a declared block is a structure and not a member of one, which is the kind
+      an ABNF rule already takes for the same thing, so the notations agree.
+    - `presence="unspecified"`: a declaration states that the name exists, never that it appears
+      anywhere; whether a structure is present is stated in prose, which the model stage reads. The
+      settled rule that an unspecified presence emits no presence and no absence item then applies,
+      and such an object is no ICS feature either.
+    - `relations=[]`: each member already records the edge as `member of <name>`, in the direction
+      that is a testable statement. Repeating the member list here would mint one `consistency` item
+      per member whose purpose is that member's own presence item, and would key the generic group
+      (D31) on the same member list twice.
+    - `source_quote`: the declaring line alone. It is the construct that states both the name and the
+      type, it is verbatim clause text as D24 requires, and a whole block is a quote no plan page can
+      print and no provenance comparison (D25 rule b) can use.
+    """
+    return TestObjectDraft(name=name, kind="structure", presence="unspecified", type=type_text,
+                           source_quote=quote)
+
+
 def _strip_innermost(text: str, pattern: str) -> str:
     """Remove bracketed groups until none is left, innermost first, so nesting is handled."""
     while True:
@@ -114,8 +140,10 @@ def _strip_innermost(text: str, pattern: str) -> str:
 # --- CDDL (RFC 8610) ------------------------------------------------------------------------------
 
 CDDL_ID = r"[A-Za-z@_$][\w@$.-]*"
-CDDL_START_RE = re.compile(r"^[A-Za-z][\w-]*\s*=\s*[({\[]")
-CDDL_RULE_RE = re.compile(r"^([A-Za-z][\w-]*)")
+CDDL_START_RE = re.compile(r"^(?P<name>[A-Za-z][\w-]*)\s*=\s*(?P<bracket>[({\[])")
+# RFC 8610 section 2.1: braces enclose a map, square brackets an array, parentheses a group. The
+# bracket a rule opens is the construct that declares the name, so it states what the name denotes.
+CDDL_CONSTRUCT = {"{": "map", "[": "array", "(": "group"}
 # RFC 8610 section 3.5.1: a member key is a bareword or a value followed by ":", or a type followed
 # by "=>". A bareword before "=>" is a type, so it names no field and is deliberately not a key here.
 CDDL_MEMBER_RE = re.compile(r"^(?P<occ>\?|\+|\d*\*\d*)?\s*"
@@ -197,11 +225,16 @@ def cddl_detect(text: str) -> list[str]:
 
 
 def cddl_parse(block: str) -> list[TestObjectDraft]:
-    """One draft per named member. A member whose line the parser cannot read contributes nothing,
-    and positional members have no name to emit at all: an array declaration none of whose members
-    is named yields one `structure` draft for the declaration itself, so it is not lost, and the
-    positions it holds are not objects. Which position holds what is a nesting the object model does
-    not carry (D29).
+    """The declaration itself, then one draft per named member. The declaration's type is the
+    bracket it opens (`CDDL_CONSTRUCT`); see `_declaration` for its other attributes.
+
+    A member whose line the parser cannot read contributes nothing, and positional members have no
+    name to emit at all: the positions an array holds are not objects, and which position holds what
+    is a nesting the object model does not carry (D29). A block none of whose lines is a readable
+    member and which is neither an array nor a map of type-keyed entries is not a declaration this
+    handler read: the parser is the acceptance gate, so it yields nothing at all - not even the name
+    on its first line, which would otherwise let an ordinary sentence carrying an equals sign and a
+    bracket mint an object.
 
     A block of one line whose right-hand side is a bare type is no member list at all: it is a type
     assignment (RFC 8610 section 3.1), and it declares its name. That name gets one `structure`
@@ -214,8 +247,8 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
         return [TestObjectDraft(name=a.group("name"), kind="structure", presence="unspecified",
                                 type=type_text or None, value_domain=value_domain, size=size,
                                 source_quote=lines[0].strip())]
-    rule = CDDL_RULE_RE.match(lines[0].strip())
-    if not rule:
+    head = CDDL_START_RE.match(lines[0].strip())
+    if not head:
         return []
     out: list[TestObjectDraft] = []
     type_keyed = False
@@ -237,11 +270,11 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
         out.append(TestObjectDraft(name=(m.group("key") or m.group("vkey")).strip('"'), kind="field",
                                    presence="optional" if occ == "?" else "mandatory",
                                    type=type_text or None, value_domain=value_domain, size=size,
-                                   relations=[f"member of {rule.group(1)}"], source_quote=quote))
-    if not out and (type_keyed or lines[0].rstrip().endswith("[")):
-        out.append(TestObjectDraft(name=rule.group(1), kind="structure", presence="unspecified",
-                                   source_quote=lines[0].strip()))
-    return out
+                                   relations=[f"member of {head.group('name')}"], source_quote=quote))
+    if not (out or type_keyed or head.group("bracket") == "["):
+        return []
+    return [_declaration(head.group("name"), CDDL_CONSTRUCT[head.group("bracket")],
+                         lines[0].strip())] + out
 
 
 # --- ABNF (RFC 5234) -----------------------------------------------------------------------------
@@ -366,6 +399,15 @@ def _json_text(value) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
+def _json_type(schema: dict) -> str | None:
+    """A schema's declared type: the `type` keyword of the validation vocabulary, narrowed by
+    `format` where it carries one. The root schema declares its own the same way a property does."""
+    kinds = schema.get("type")
+    kinds = " / ".join(kinds) if isinstance(kinds, list) else kinds
+    fmt = schema.get("format")
+    return (f"{kinds} ({fmt})" if kinds and fmt else kinds or fmt) or None
+
+
 def json_schema_parse(block: str) -> list[TestObjectDraft]:
     doc = _json_object(block)
     if doc is None:
@@ -376,14 +418,16 @@ def json_schema_parse(block: str) -> list[TestObjectDraft]:
     # on to tell two schemas of one clause apart. A schema without one stays anonymous.
     schema_id = doc["$id"] if isinstance(doc.get("$id"), str) and doc["$id"] else None
     out: list[TestObjectDraft] = []
+    if schema_id:
+        # the declaration object of this notation: `$id` is its only name, so a schema without one
+        # declares no name and gets none invented for it
+        quote = next((l for l in lines if re.match(r"^\s*\"\$id\"\s*:", l)), lines[0])
+        out.append(_declaration(schema_id, _json_type(doc), quote))
     for name, schema in doc["properties"].items():
         if not isinstance(schema, dict) or not name:
             continue
         declared = re.compile(r"^\s*\"" + re.escape(name) + r"\"\s*:")
         quote = next((l for l in lines if declared.match(l)), None) or next((l for l in lines if f'"{name}"' in l), lines[0])
-        kinds = schema.get("type")
-        kinds = " / ".join(kinds) if isinstance(kinds, list) else kinds
-        fmt = schema.get("format")
         value_domain = None
         if isinstance(schema.get("enum"), list):
             value_domain = " / ".join(_json_text(v) for v in schema["enum"])
@@ -396,7 +440,7 @@ def json_schema_parse(block: str) -> list[TestObjectDraft]:
         size = ", ".join(f"{k} {_json_text(schema[k])}" for k in JSON_SIZE_KEYS if k in schema)
         out.append(TestObjectDraft(name=name, kind="field",
                                    presence="mandatory" if name in required else "optional",
-                                   type=(f"{kinds} ({fmt})" if kinds and fmt else kinds or fmt) or None,
+                                   type=_json_type(schema),
                                    value_domain=value_domain or None, size=size or None,
                                    relations=[f"member of {schema_id}"] if schema_id else [],
                                    source_quote=quote))
@@ -456,7 +500,11 @@ def asn1_parse(block: str) -> list[TestObjectDraft]:
                                    presence="optional" if optional else "mandatory",
                                    type=" ".join(rest.split()) or None, value_domain=value_domain, size=size,
                                    relations=[f"member of {head.group('name')}"], source_quote=quote))
-    return out
+    if not out:                 # the parser read no member of it, so it read no declaration either
+        return []
+    # X.680 clauses 25, 27 and 29: the keyword after `::=` is the type the name denotes, kept as the
+    # notation writes it
+    return [_declaration(head.group("name"), head.group("construct"), lines[0].strip())] + out
 
 
 HANDLERS = {
