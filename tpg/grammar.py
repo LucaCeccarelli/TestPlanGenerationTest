@@ -350,7 +350,7 @@ def asn1_parse(block: str) -> list[TestObjectDraft]:
         out.append(TestObjectDraft(name=m.group("field"), kind="field",
                                    presence="optional" if optional else "mandatory",
                                    type=" ".join(rest.split()) or None, value_domain=value_domain, size=size,
-                                   source_quote=quote))
+                                   relations=[f"member of {head.group('name')}"], source_quote=quote))
     return out
 
 

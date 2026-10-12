@@ -71,10 +71,12 @@ ASN1 = """Entry ::= SEQUENCE {
   note UTF8String OPTIONAL
 }"""
 ASN1_EXPECTED = [
-    _draft(name="name", type="UTF8String", size="1..64", source_quote="name UTF8String (SIZE(1..64)),"),
-    _draft(name="state", type="INTEGER", value_domain="idle(0), busy(1)",
+    _draft(name="name", type="UTF8String", size="1..64", relations=["member of Entry"],
+           source_quote="name UTF8String (SIZE(1..64)),"),
+    _draft(name="state", type="INTEGER", value_domain="idle(0), busy(1)", relations=["member of Entry"],
            source_quote="state INTEGER { idle(0), busy(1) },"),
-    _draft(name="note", presence="optional", type="UTF8String", source_quote="note UTF8String OPTIONAL"),
+    _draft(name="note", presence="optional", type="UTF8String", relations=["member of Entry"],
+           source_quote="note UTF8String OPTIONAL"),
 ]
 
 WELL_FORMED = [("cddl", CDDL, CDDL_EXPECTED), ("abnf", ABNF, ABNF_EXPECTED),
@@ -192,7 +194,8 @@ def test_a_member_sharing_its_line_with_the_closing_bracket_is_read(notation, te
 
 
 def test_a_member_sharing_its_line_with_the_closing_bracket_keeps_its_type():
-    assert _run("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN", source_quote="two BOOLEAN")
+    assert _run("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN",
+                                                         relations=["member of Pair"], source_quote="two BOOLEAN")
 
 
 ABNF_REJECTED = [
@@ -243,5 +246,13 @@ def test_an_occurrence_marker_without_a_number_is_written_as_text():
 def test_only_the_bracket_that_closes_the_declaration_is_stripped_from_a_member():
     """The member's own constraint ends in a bracket too; cutting that one would break its type."""
     got = _run("asn1", "One ::= SEQUENCE {\n  name UTF8String (SIZE(1..64)) }")
-    assert got == [_draft(name="name", type="UTF8String", size="1..64",
+    assert got == [_draft(name="name", type="UTF8String", size="1..64", relations=["member of One"],
                           source_quote="name UTF8String (SIZE(1..64))")]
+
+
+def test_an_asn1_member_records_the_type_it_belongs_to():
+    """Two structures of one clause may declare the same member name; the merge tells them apart by
+    the declaration the handler names here."""
+    text = "One ::= SEQUENCE {\n  item INTEGER\n}\nTwo ::= SEQUENCE {\n  item BOOLEAN\n}"
+    assert [(d["name"], d["type"], d["relations"]) for d in _run("asn1", text)] == [
+        ("item", "INTEGER", ["member of One"]), ("item", "BOOLEAN", ["member of Two"])]
