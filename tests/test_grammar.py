@@ -371,6 +371,111 @@ def test_a_map_of_only_type_keyed_entries_yields_the_structure_itself():
                source_quote="Index = {")]
 
 
+# --- an integer-keyed CDDL member (RFC 8610 section 3.5.1) --------------------------------------
+
+CDDL_INTEGER_KEYED = """Options = {
+  ? 0: tstr,
+  ? 1 : uint .size 1,
+  10: bstr
+}"""
+
+
+def test_an_integer_keyed_cddl_member_is_a_field():
+    """RFC 8610 section 3.5.1 admits a value in the key position, and section 3.5.1 makes
+    `value ":"` shorthand for `value "=>"`, so an integer key is the key itself and not a text
+    string. An integer-keyed map is the idiomatic CBOR pattern, so each entry is a field."""
+    assert _run("cddl", CDDL_INTEGER_KEYED) == [
+        _draft(name="Options", kind="structure", presence="unspecified", type="map",
+               source_quote="Options = {"),
+        _draft(name="Options[0]", presence="optional", type="tstr", relations=["member of Options"],
+               source_quote="? 0: tstr,"),
+        _draft(name="Options[1]", presence="optional", type="uint", size="1",
+               relations=["member of Options"], source_quote="? 1 : uint .size 1,"),
+        _draft(name="Options[10]", type="bstr", relations=["member of Options"],
+               source_quote="10: bstr"),
+    ]
+
+
+def test_an_integer_keyed_member_is_named_for_its_structure_and_its_key():
+    """The key alone is no name: two structures of the same standard both key an entry `0`, and the
+    name is what the evaluation matches on and what a test case names as the thing under check. The
+    structure alone is no name either, since a map holds several differently-keyed entries."""
+    names = [d["name"] for d in _run("cddl", "A = {\n  0: tstr,\n  1: uint\n}\nB = {\n  0: bool\n}")]
+    assert names == ["A", "A[0]", "A[1]", "B", "B[0]"]
+    assert len(set(names)) == len(names)
+
+
+def test_an_integer_key_written_with_the_type_arrow_is_the_same_member():
+    """RFC 8610 section 3.5.1: a value in the key position may be written with either separator, and
+    a type that is one value matches exactly that value, so `0 => t` and `0: t` are one member."""
+    arrow = _members("cddl", "r = {\n  0 => tstr\n}")
+    assert arrow == [_draft(name="r[0]", type="tstr", relations=["member of r"],
+                            source_quote="0 => tstr")]
+    colon = _members("cddl", "r = {\n  0: tstr\n}")
+    assert [{**d, "source_quote": ""} for d in arrow] == [{**d, "source_quote": ""} for d in colon]
+
+
+def test_a_negative_integer_key_is_a_field():
+    """RFC 8610 section 2.1: an integer value may be negative, and CBOR map keys routinely are."""
+    assert [d["name"] for d in _members("cddl", "r = {\n  ? -1: tstr\n}")] == ["r[-1]"]
+
+
+CDDL_UNREAD_KEY = [
+    "r = {\n  1.5: tstr\n}",            # a floating-point key: legal, but no field a plan can name
+    "r = {\n  h'00': tstr\n}",          # a byte-string key, likewise
+    "r = {\n  0xff: tstr\n}",           # not an integer value in the notation's own syntax
+]
+
+
+@pytest.mark.parametrize("text", CDDL_UNREAD_KEY, ids=["float", "bytes", "hex"])
+def test_a_key_outside_the_boundary_yields_no_field_and_raises_nothing(text):
+    """The boundary is drawn at integers: the rest of RFC 8610's `value` production is legal in the
+    key position and vanishingly rare in practice, and reading it is not refused, only not done."""
+    assert _run("cddl", text) == []
+
+
+CDDL_PROSE_IN_A_BLOCK = """Capabilities = {
+? 0: uint,
+1: the device shall support at least one retrieval method,
+2: see 8.1.1.1 for the encoding
+}"""
+
+
+def test_a_numbered_prose_line_inside_a_cddl_block_mints_no_field():
+    """A key pattern that accepts digits accepts the leader of a numbered list, and a prose list is
+    what the project has twice been bitten by. The guard is the type side: what follows the key must
+    be an element of the notation's own type syntax - one type, its controls, its alternatives, its
+    bracketed groups - and a sentence is a run of bare words, which is none of those."""
+    assert [d["name"] for d in _run("cddl", CDDL_PROSE_IN_A_BLOCK)] == ["Capabilities", "Capabilities[0]"]
+
+
+CDDL_PROSE_ONLY = [
+    "Methods = {\n1: the reader shall support NFC,\n2: the reader shall support BLE\n}",
+    "Window = {\n10:30 to 11:00 is the response window\n}",
+    "Table = {\n1: NFC data retrieval, see Table 5\n}",
+]
+
+
+@pytest.mark.parametrize("text", CDDL_PROSE_ONLY, ids=["list", "clock", "table"])
+def test_a_block_of_only_prose_lines_yields_no_object_at_all(text):
+    """No line is a member the parser read, so the parser - the acceptance gate - yields nothing,
+    not even the name on the first line."""
+    assert _run("cddl", text) == []
+
+
+CDDL_REAL_TYPES = ["tstr", "any", "uint .size 1", "bstr .size (4..8)", '"fast" / "slow"', "1..32",
+                   "[2*4 tstr]", "#6.24(bstr .cbor Foo)", "{ * tstr => any }", "uint / nil",
+                   "[+ Foo]", "(Foo / Bar)", "h'0102'", "tstr .regexp \"[0-9]+\"", "Foo // Bar"]
+
+
+@pytest.mark.parametrize("type_text", CDDL_REAL_TYPES, ids=range(len(CDDL_REAL_TYPES)))
+def test_the_member_gate_admits_every_shape_of_cddl_type(type_text):
+    """The gate is on the value side of every member, so a type expression the notation permits must
+    still pass it: an identifier, a literal, an alternation, a range, a bracketed group, a tagged
+    type, a control operator. Pinned because a gate that silently narrows is worse than no gate."""
+    assert _members("cddl", "r = {\n  item: %s\n}" % type_text) != []
+
+
 def test_abnf_numeric_value_alternatives_are_a_value_domain():
     """RFC 5234 section 2.3: a numeric terminal is a value, so an alternation of them is a domain."""
     got = _run("abnf", "flag = %x41 / %x42\nalso = %d13.10")

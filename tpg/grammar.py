@@ -146,10 +146,34 @@ CDDL_START_RE = re.compile(r"^(?P<name>[A-Za-z][\w-]*)\s*=\s*(?P<bracket>[({\[])
 CDDL_CONSTRUCT = {"{": "map", "[": "array", "(": "group"}
 # RFC 8610 section 3.5.1: a member key is a bareword or a value followed by ":", or a type followed
 # by "=>". A bareword before "=>" is a type, so it names no field and is deliberately not a key here.
+# The same section makes `value ":"` shorthand for `value "=>"` - note that only a *bareword* key is
+# shorthand for the text string of that bareword; a value key is the value itself - so a value in
+# the key position is read the same whichever separator carries it.
+#
+# `value` is a number, a text string or a byte string (section 2.1). Of those, only the integer is
+# read as a field here: an integer-keyed map is the idiomatic CBOR pattern, written precisely to keep
+# encodings small, so it is pervasive in CBOR-based standards, while a floating-point or byte-string
+# key is legal, vanishingly rare and would give a plan page no name a reader could place.
 CDDL_MEMBER_RE = re.compile(r"^(?P<occ>\?|\+|\d*\*\d*)?\s*"
-                            r"(?:(?P<key>\"[^\"]+\"|[A-Za-z_][\w-]*)\s*:|(?P<vkey>\"[^\"]+\")\s*=>)"
+                            r"(?:(?P<key>\"[^\"]+\"|[A-Za-z_][\w-]*)\s*:"
+                            r"|(?P<vkey>\"[^\"]+\")\s*=>"
+                            r"|(?P<ikey>-?\d+)\s*(?::|=>))"
                             r"\s*(?P<type>.+?)\s*,?$")
 CDDL_TYPE_KEY_RE = re.compile(r"^(?:\?|\+|\d*\*\d*)?\s*[A-Za-z_][\w-]*\s*\^?\s*=>")
+# the acceptance gate on the value side of a member, in the spirit of `ABNF_ELEMENTS_RE`: a type
+# expression (RFC 8610 appendix B) is built from atoms - an identifier, a literal value, a tagged
+# type or a bracketed group - each optionally repeated and optionally carrying control operators,
+# joined by the type and group choice operators or by a range. A run of two bare words separated by
+# a space is none of those, and that is what a sentence is. The gate matters most for an integer
+# key, which a numbered prose list writes exactly as the notation writes a member key, and which
+# therefore carries almost none of the evidence an identifier-shaped key carries by itself.
+# ponytail: a prose line of one single word after the key ("1: NFC") is syntactically a type and is
+# admitted; narrow it only if a real document is seen to carry such a list inside a declaration.
+CDDL_ATOM = (r"(?:#\d(?:\.\d+)?(?:\([^()]*\))?|\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}"
+             r"|\"[^\"]*\"|[a-zA-Z0-9]*'[^']*'|-?\d+(?:\.\d+)?(?:e[-+]?\d+)?|" + CDDL_ID + r")")
+CDDL_TERM = (r"(?:(?:\?|\+|\d*\*\d*)\s*)?" + CDDL_ATOM +
+             r"(?:\s*\.[a-z0-9]+\s*(?:\([^()]*\)|\"[^\"]*\"|[^\s()]+))*")
+CDDL_TYPE_RE = re.compile(r"^" + CDDL_TERM + r"(?:\s*(?://|/|\.\.\.?)\s*" + CDDL_TERM + r")*$")
 # a one-line rule (RFC 8610 section 3.1) whose right-hand side is one type: an identifier or a tagged
 # type, optionally carrying control operators. Anything else - a bracket, an alternation, a second
 # bare word - is not a lone type, which is what keeps a sentence with an equals sign out.
@@ -216,6 +240,24 @@ def _cddl_constraints(type_text: str) -> tuple[str, str | None, str | None]:
     return " ".join(type_text.split()), value_domain, size
 
 
+def _cddl_member_name(m: re.Match, declared: str) -> str:
+    """What the member is called. A bareword or text-string key names itself, as the notation writes
+    it. An integer key names nothing on its own, so it is qualified by the structure that declares
+    it: `WifiOptions[0]`.
+
+    The name is what the evaluation matches on and what a test case names as the thing under check,
+    so neither half may be dropped. The key alone would collide across structures - several maps of
+    one standard each key an entry `0`, and they are different fields - and would print in a plan as
+    a bare digit no reader could place. The structure alone would collide between the differently
+    keyed entries of that one structure. The pair is both unique and readable: it says which map and
+    which key, which is exactly how a CBOR-based standard refers to such a field in its own prose,
+    and it cannot collide with a bareword key, since no CDDL identifier contains a bracket.
+    """
+    if ikey := m.group("ikey"):
+        return f"{declared}[{ikey}]"
+    return (m.group("key") or m.group("vkey")).strip('"')
+
+
 def cddl_detect(text: str) -> list[str]:
     """Every bracketed declaration, then every one-line type assignment - but the latter only where
     the text independently shows CDDL, i.e. where a bracketed declaration was found. `name = type` is
@@ -259,15 +301,17 @@ def cddl_parse(block: str) -> list[TestObjectDraft]:
             type_keyed = type_keyed or bool(CDDL_TYPE_KEY_RE.match(stripped))
             continue
         occ = m.group("occ") or ""
-        type_text, value_domain, size = _cddl_constraints(
-            CDDL_GROUP_CHOICE_RE.sub("", m.group("type").strip()).strip())
+        raw = CDDL_GROUP_CHOICE_RE.sub("", m.group("type").strip()).strip()
+        if not CDDL_TYPE_RE.match(raw):     # the value side is no type, so the line is no member
+            continue
+        type_text, value_domain, size = _cddl_constraints(raw)
         if size is None and occ and occ != "?":
             size = OCCURRENCE_TEXT.get(occ, occ)   # an occurrence indicator is a count constraint
         alts = [a.strip() for a in type_text.split("/") if a.strip()]
         if alts and all(CDDL_LITERAL_RE.fullmatch(a) for a in alts):
             value_domain = value_domain or " / ".join(alts)
             type_text = ""                 # the alternation is the value domain, not an encoding
-        out.append(TestObjectDraft(name=(m.group("key") or m.group("vkey")).strip('"'), kind="field",
+        out.append(TestObjectDraft(name=_cddl_member_name(m, head.group("name")), kind="field",
                                    presence="optional" if occ == "?" else "mandatory",
                                    type=type_text or None, value_domain=value_domain, size=size,
                                    relations=[f"member of {head.group('name')}"], source_quote=quote))
