@@ -12,6 +12,10 @@ NUM = r"(?:\d+(?:\.\d+)*|[A-Z]\.\d+(?:\.\d+)*)"
 # English word, not a clause id; a letter-only clause id must come through the "Annex [A-Z]" branch below
 HEADING_RE = re.compile(rf"^({NUM}|(?:Annex|Appendix)[ \t\xa0]+[A-Z])\.?([ \t\xa0]+)([A-Za-z].*)$")
 NUMBER_ONLY_RE = re.compile(r"^((?:\d+|[A-Z])\.\d+(?:\.\d+)*)\.?[ \t\xa0]*$")
+# A comma, a semicolon, or a period that ends a word: punctuation that belongs to a sentence and
+# not to a clause title. It is what tells a wrapped prose line opening on a cross-reference
+# ("4.3.1 of [IEEE754]. Then, ...") from a clause whose title is a lowercase identifier.
+SENTENCE_PUNCT_RE = re.compile(r"[,;]|\.(?:\s|$)")
 MAX_HEADING_LEN = 90
 JOINED = "\x0e"   # marks a heading rebuilt from a number-only line and the following title line
                   # ponytail: must not be Unicode-whitespace (str.strip() would eat it before _heading() sees it)
@@ -226,7 +230,16 @@ def _heading(line: str) -> tuple[str, str] | None:
     number, title = re.sub(r"^(?:Annex|Appendix)[ \t\xa0]+", "", m.group(1)), m.group(3).strip()
     tab_separated = "\t" in m.group(2)
     if not joined and not tab_separated and not title[:1].isupper():
-        return None
+        # A lowercase title is prose unless the layout says otherwise. Coming from its own line
+        # (joined) or separated by a tab, the layout alone settles it. Space separated, two
+        # structural conditions have to hold: the number is multi-level, because a bare
+        # single-level number opening a line is an ordered-list item or a page footer far more
+        # often than a clause; and the title carries no sentence punctuation, because a clause
+        # title does not. ponytail: the rest is left to follows() - "6.1 of" and "X.509
+        # certificates" pass both conditions and only the sequence rule rejects them, so a
+        # document in which no heading has been seen yet stays at the mercy of that rule.
+        if "." not in number or SENTENCE_PUNCT_RE.search(title):
+            return None
     return number, title
 
 

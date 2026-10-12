@@ -88,8 +88,14 @@ def test_fullest_duplicate_keeps_bare_id():
 
 
 def test_openid_real_clauses_keep_bare_ids():
-    by_id = {c.id: c for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
-    assert len(by_id["5.7"].text) > 200 and "5.7#2" in by_id
+    # Every table-of-contents entry is now followed by the next entry, so each ToC clause is
+    # empty and _dedupe_ids drops it; what survives under the bare id is the body clause.
+    clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
+    by_id = {c.id: c for c in clauses}
+    assert len(by_id["5.7"].text) > 200
+    for c in clauses:
+        if "#" in c.id:
+            assert len(by_id[c.id.split("#")[0]].text) >= len(c.text)
 
 
 def test_openid_pdf_ids_are_unique():
@@ -202,10 +208,11 @@ def test_table_cell_number_is_not_a_heading():
     assert "5.2 Further extensions" in clauses[0].text
 
 
-def test_joined_heading_accepts_lowercase_title_but_inline_lowercase_is_rejected():
+def test_lowercase_title_is_accepted_from_its_own_line_and_inline():
+    # Both layouts of a lowercase clause title are headings: the number alone on a line with the
+    # title on the next, and the number space separated from the title on one line.
     clauses = segment(["7.3.2\t\nnameSpace\nThe nameSpace shall be text.\n7.3.3 mDL data\nBody."])
-    assert [(c.id, c.title) for c in clauses] == [("7.3.2", "nameSpace")]
-    assert "7.3.3 mDL data" in clauses[0].text
+    assert [(c.id, c.title) for c in clauses] == [("7.3.2", "nameSpace"), ("7.3.3", "mDL data")]
 
 
 def test_soft_hyphens_are_removed():
@@ -265,3 +272,62 @@ def test_iso_741_has_33_rows():
     if not (FIX / "iso_18013_5.pdf").exists():
         pytest.skip("ISO fixture not distributed")
     assert next(c for c in ingest(str(FIX / "iso_18013_5.pdf")) if c.id == "7.4.1").row_count == 33
+
+
+def test_inline_dotted_heading_accepts_lowercase_identifier_title():
+    """A clause title is often a lowercase protocol identifier. Printed on one line, space
+    separated from a multi-level number, it is still a heading."""
+    clauses = segment(["5.7 Passing requests\nBody.\n5.8. aud of a Request Object\nThe aud shall match.\n"
+                       "5.9 Prefixes\nBody.\n5.9.1 vp_token\nThe token shall be present."])
+    assert [(c.id, c.title) for c in clauses] == [
+        ("5.7", "Passing requests"), ("5.8", "aud of a Request Object"),
+        ("5.9", "Prefixes"), ("5.9.1", "vp_token")]
+
+
+def test_inline_lowercase_title_with_sentence_punctuation_is_not_a_heading():
+    """A wrapped prose line that opens with a cross-reference carries sentence punctuation; a
+    clause title does not. Both candidates below are in plausible sequence, so only the
+    punctuation separates them."""
+    clauses = segment(["5.1 Codes\nAddresses are randomized as described in\n"
+                       "5.2 to randomize lower layer addresses.\nMore body."])
+    assert [c.id for c in clauses] == ["5.1"]
+    clauses = segment(["4.2 Terms\nThe preferred serialization is the one given in Clause\n"
+                       "4.3.1 of [IEEE754]. Then, when encoding, the shorter form applies."])
+    assert [c.id for c in clauses] == ["4.2"]
+
+
+def test_inline_lowercase_title_needs_a_multi_level_number():
+    """A bare single-level number opening a line is an ordered-list item or a page footer far
+    more often than a clause, so it still needs a title that reads as a title."""
+    clauses = segment(["1 Scope\nAn application that requires tag number\n"
+                       "2 support may restrict the tag content\nMore body."])
+    assert [c.id for c in clauses] == ["1"]
+    clauses = segment(["1 Scope\nBody text.\nAnnex A lists some existing binary formats\nMore body."])
+    assert [c.id for c in clauses] == ["1"]
+
+
+def test_openid_pdf_finds_lowercase_identifier_clauses():
+    ids = {c.id for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
+    assert {"5.8", "E.1.1", "E.2.2", "E.8.1", "15.9.1"} <= ids
+
+
+@pytest.mark.parametrize("name", ["OpenID4VP1-0.pdf", "RFC8949.pdf", "iso_18013_5.pdf"])
+def test_no_clause_absorbs_an_implausible_share_of_a_document(name):
+    """A heading rule that is too permissive shows up as one clause swallowing the rest of the
+    document, so cap the largest clause's share of the whole text."""
+    if not (FIX / name).exists():
+        pytest.skip(f"{name} not distributed")
+    clauses = ingest(str(FIX / name))
+    total = sum(len(c.text) for c in clauses)
+    assert max(len(c.text) for c in clauses) < total * 0.10
+
+
+def test_iso_pdf_segments_every_numbered_heading():
+    """The ISO fixture prints 265 bold numbered heading lines; segmentation finds all of them,
+    six numbering levels included, and invents none."""
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    ids = {c.id.split("#")[0] for c in ingest(str(FIX / "iso_18013_5.pdf"))}
+    assert len(ids) == 265
+    assert {"8.2.1.1.2.1", "8.2.1.1.2.2", "8.2.1.1.2.3", "8.2.1.2.3.1", "8.2.1.2.3.2",
+            "8.2.2.1.1", "9.2.1.4", "E"} <= ids
