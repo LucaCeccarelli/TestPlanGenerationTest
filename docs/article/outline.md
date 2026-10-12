@@ -316,12 +316,13 @@ ingest  ->  grammar (deterministic objects from declarations)
 | D22 | **Applicability predicates** `applies_when`, verbatim text on requirements and objects, inherited by coverage items and stated in the case | the Technology and Profile axis, 595 of 907 official cases |
 | D23 | The four **test groups** of X.291 clause 10.2.2: capability, valid behaviour, invalid behaviour, inopportune behaviour, with two new checks `capability` and `inopportune` | the group the tool had no analogue for |
 | D24 | A **grammar stage**, deterministic, harvesting CDDL, ABNF, JSON Schema and ASN.1 declarations into objects with `origin: grammar` | the 257 encoding checks; nothing downstream changes because it emits the existing object type |
-| D25 | **Deflation**: drop a requirement item when an object already yields the same check, and make a recurring structure a **generic group** owned once with a `reference` item at every other site | X.291 clause 11; removes most of the twelvefold inflation |
+| D25 | **Deflation**: drop a requirement item when an object already yields the same check, and make a recurring structure a **generic group** owned once with a `reference` item at every other site | X.291 clause 11; intended to remove most of the twelvefold inflation, and measured at 1.4 per cent once the rule was made sound, see 6.4 |
 | D26 | **Generation batched per source**, up to 8 items per call, keyed by coverage item id, retrying only the failures | 12.7 hours towards about 3, and consistent preconditions per object |
 | D27 | Evaluation with **three denominators**, a **judge-free structural matcher** on data item plus check type, **ICS coverage** as the headline, and macro averages | removes the same-family judge from the headline number |
 | D28 | Chunk limit 3000, salvage of a truncated reply's complete elements, and **row accounting**: the ingest counts table rows so the model stage can be re-prompted for the rows it did not return | the 361 rows that produced 4 objects |
 | D29 | Recorded as deliberately **not** done: the ICS factoring rule of ETS 300 406 Annex A.2, the two-stage combination deflation of X.291 clause 10.3.3, human calibration of the judge | honest gaps, each needing data the model does not carry or human labelling |
 | D30 | **Direction selects the wording of a negative coverage item, never its existence.** The invalid-side items are emitted for every object; for a received object the purpose asks that an invalid instance be supplied and rejected, for a produced or internal one that the implementation never produce or hold it | an amendment forced by measurement, see 6.4 |
+| D31 | A **generic group is a shared specification, not a shared name**, keyed on every attribute that determines its test purposes; an **overlap is shared provenance**, not a shared word | amendment forced by review; the name-keyed version asserted purposes the owning ladder did not contain, and the word-keyed version deleted genuine test purposes |
 
 ### 6.3 The choices, and what was rejected
 
@@ -401,11 +402,32 @@ accept any technical specification has to be honest that it currently accepts an
 PDF carries a recoverable character map, and that this is a property of the file rather than of the
 standard.
 
-**Deflation is real but not free.** The generic-group rule alone removes 16.2 per cent of coverage
-items on the fixture, 321 to 269, with 18 reference items over 8 groups, before any requirement
-overlap is considered. Its risk is symmetric and worth stating: it keys on the object's name, so a
-structure genuinely constrained differently at two sites collapses to one ladder plus a pointer.
-`--no-deflate` exists so the cost can be measured rather than assumed, and the run reports both.
+**Deflation was mostly a measurement of its own defect.** The generic-group rule first measured a
+16.2 per cent reduction in coverage items, which looked like the answer to the twelvefold
+over-generation. Review found the rule keyed on the object's bare name, so it collapsed occurrences
+carrying different obligations: on the real fixture 6 of 18 pointer sites were mandatory entries
+whose only coverage item pointed at an optional ladder, 16 of 18 declared a different type than the
+owner, and the evaluation counted all 18 as covered. The second rule had the mirror defect, keying on
+the object's name appearing anywhere in a requirement's text, which deletes a real test purpose
+whenever a name happens to occur: an object `nonce` constrained by size suppressed a requirement
+stating a 500 ms timing limit, and a three-character name such as `set` matches ordinary English.
+
+Both were errors in the specification, not the implementation, and both are corrected as D31: a group
+is keyed on every attribute that determines its purposes, and an overlap is decided by shared
+provenance, the object's own source quote against the requirement's text. The honest number after the
+correction is **1.4 per cent**, down from 12.9. Every one of the twelve sites that stopped grouping
+differs on type, kind, presence or structure membership, and none on spelling, so the fall is the
+defect being removed rather than a key made too blunt.
+
+The conclusion is worth more than the mechanism. **X.291's generic test suite factors across systems
+under test, not across clauses of one specification.** The official suite's 27 generic references run
+between its mDL and mDL-reader appendices, where the same structure is tested from two sides; within
+a single standard, the same field name recurring in different structures genuinely carries different
+obligations, and there is almost nothing to factor. So deflation is not the remedy for over-generation
+that we took it for. It is a correctness mechanism that keeps a shared specification from being tested
+twice, worth 1.4 per cent here and more on a specification that genuinely repeats itself, and the
+twelvefold density gap has to be addressed where it is actually produced, in how many items one
+declaration yields.
 
 ### 6.5 Results
 
