@@ -318,7 +318,7 @@ ingest  ->  grammar (deterministic objects from declarations)
 | D24 | A **grammar stage**, deterministic, harvesting CDDL, ABNF, JSON Schema and ASN.1 declarations into objects with `origin: grammar` | the 257 encoding checks; nothing downstream changes because it emits the existing object type |
 | D25 | **Deflation**: drop a requirement item when an object already yields the same check, and make a recurring structure a **generic group** owned once with a `reference` item at every other site | X.291 clause 11; intended to remove most of the twelvefold inflation, and measured at 1.4 per cent once the rule was made sound, see 6.4 |
 | D26 | **Generation batched per source**, up to 8 items per call, keyed by coverage item id, retrying only the failures | 12.7 hours towards about 3, and consistent preconditions per object |
-| D27 | Evaluation with **three denominators**, a **judge-free structural matcher** on data item plus check type, **ICS coverage** as the headline, and macro averages | removes the same-family judge from the headline number |
+| D27 | Evaluation with **three denominators**, a **judge-free structural matcher** on data item plus check type, **ICS coverage** as a soundness invariant, and macro averages | removes the same-family judge from the headline number. ICS coverage turned out to be satisfied by construction, so it is an invariant rather than a score, see 6.4 |
 | D28 | Chunk limit 3000, salvage of a truncated reply's complete elements, and **row accounting**: the ingest counts table rows so the model stage can be re-prompted for the rows it did not return | the 361 rows that produced 4 objects |
 | D29 | Recorded as deliberately **not** done: the ICS factoring rule of ETS 300 406 Annex A.2, the two-stage combination deflation of X.291 clause 10.3.3, human calibration of the judge | honest gaps, each needing data the model does not carry or human labelling |
 | D30 | **Direction selects the wording of a negative coverage item, never its existence.** The invalid-side items are emitted for every object; for a received object the purpose asks that an invalid instance be supplied and rejected, for a produced or internal one that the implementation never produce or hold it | an amendment forced by measurement, see 6.4 |
@@ -455,8 +455,20 @@ clause of the standard under test; 250 whose cited clause id actually exists in 
 The third is the only honest one without a semantic crosswalk between the 2020 draft and the 2021
 published edition, and it is the one scored.
 
-**To be filled from the next full run** on a local 31B model: ICS items and ICS coverage, which is
-the metric that needs no official suite and therefore transfers to any standard; objects by origin,
+**ICS coverage is an invariant, not a score, and saying so is part of the result.** D27 nominated it
+as the headline because ETR 266 Guidance 5 states the rule the genre actually measures, that any
+mandatory or optional item of the ICS is covered by at least one test purpose, and because it needs
+no official suite and so transfers to standards that have none. Wiring it up and running all sixteen
+flag combinations showed it reads 100 per cent of 65 items in every one. That is because the
+generator emits a capability item per due ICS item by construction, so the figure cannot fall below
+100 without a defect. It is therefore a soundness check on the derive stage, which is worth having and
+is worth publishing as a guarantee, but it is not a measure of how much of a standard was understood.
+What carries that information is the **denominator**: 65 ICS items is a claim about how many testable
+features the tool found in the document, and it is that count, not the ratio, which should be compared
+across runs and across standards.
+
+**To be filled from the next full run** on a local 31B model: the ICS item count with its coverage
+invariant restated; objects by origin,
 prose against grammar; coverage items by test group; the structural match rate beside the judge rate
 on the new plan; and wall time against the previous 12.7 hours, with the LLM call count under batched
 and per-item generation.
