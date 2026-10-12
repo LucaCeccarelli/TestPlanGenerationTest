@@ -529,6 +529,62 @@ def test_the_same_prose_drops_only_the_check_families_the_object_covers():
     assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "boundary"]
 
 
+def test_a_bare_name_quote_is_not_prose_and_deletes_nothing():
+    """C1: the model prompt asks for a verbatim substring that *names* the object, so half of a real
+    run's objects carry their bare name as `source_quote`. A bare name is contained in nearly every
+    requirement text of its clause, which turned rule (b) back into the name-occurrence heuristic D31
+    abolished. The object side must be a requirement-bearing span."""
+    o = obj(id="OBJ-6.2-1", clause_id="6.2", name="mDL", kind="structure", direction="produced",
+            presence="mandatory", source_quote="mDL")
+    r = req(id="REQ-6.2-1", clause_id="6.2",
+            text="The interface between the issuing authority and the mDL shall support the ability to update information.")
+    items = derive([r], [o], build_ics([r], [o]))
+    # "between" makes this requirement text a boundary too; the point is that nominal and negative survive
+    assert [i.check for i in items if i.source_id == "REQ-6.2-1"] == ["capability", "nominal", "negative",
+                                                                      "boundary"]
+
+
+def test_a_sentence_quote_naming_the_same_obligation_still_suppresses():
+    """The rule still fires where it should: one obligation sentence read twice is one test."""
+    prose = "The error flag shall be a uint."
+    o = obj(id="OBJ-5.4-1", clause_id="5.4", name="error flag", presence="mandatory", direction="received",
+            type="uint", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability"]
+
+
+def test_an_obligation_quote_about_another_aspect_does_not_delete_a_requirement_item():
+    """A quote that is prose but states a different obligation is not the same prose: containment
+    still decides, the modal verb only admits the object side to the comparison."""
+    o = obj(presence="mandatory", direction="received", size="16 to 32 bytes",
+            source_quote="The nonce shall be unique per session.")
+    r = req(id="REQ-5.4-1", clause_id="5.4",
+            text="The reader shall respond to a request carrying a nonce within 500 ms.")
+    items = derive([r], [o], build_ics([r], [o]))
+    assert [i.check for i in items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative",
+                                                                      "boundary"]
+
+
+def test_every_rule_b_removal_is_logged_with_its_suppressor_and_a_total():
+    """A deletion rule that leaves no trace is how C1 survived two reviews."""
+    prose = "The nonce shall be a text string."
+    o = obj(presence="mandatory", direction="received", type="text string", source_quote=prose)
+    r = req(id="REQ-5.4-1", clause_id="5.4", text=prose)
+    lines: list[str] = []
+    derive([r], [o], build_ics([r], [o]), log=lines.append)
+    assert [l for l in lines if "CI-REQ-5.4-1-nominal" in l and "OBJ-5.4-1" in l and prose.lower() in l]
+    assert [l for l in lines if "2 of " in l and "1 nominal" in l and "1 negative" in l]
+
+
+def test_nothing_is_logged_when_rule_b_removes_nothing():
+    o = obj(presence="mandatory", direction="received", source_quote="mDL")
+    r = req(id="REQ-5.4-1", clause_id="5.4", text="The nonce shall be present.")
+    lines: list[str] = []
+    derive([r], [o], build_ics([r], [o]), log=lines.append)
+    assert lines == []
+
+
 # --- D21 guarantee, in the fast suite (Important 2) ---
 
 def assert_every_due_ics_item_is_covered(reqs, objs):

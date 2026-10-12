@@ -1,9 +1,10 @@
 """Coverage items from the ICS proforma, the requirements and the objects. Deterministic, no LLM
 (ISO/IEC/IEEE 29119-4 test coverage items; test groups from ITU-T X.291 clause 10.2.2)."""
 import re
+import sys
 from collections import Counter
 
-from tpg.extract import norm
+from tpg.extract import CANDIDATE_RE, norm
 from tpg.models import Check, CoverageItem, Group, ICSItem, Kind, Requirement, TestObject
 from tpg.verify import required_assignments
 
@@ -158,8 +159,16 @@ def same_prose(quote: str, text: str) -> bool:
     """Were an object and a requirement read off the same prose? Both sides normalised, and containment
     counts in either direction, because an extractor may store the obligation clause of a longer sentence
     as the quote or quote the whole sentence a shorter requirement text states. An empty side never
-    matches: it would otherwise be contained in everything."""
-    return bool(quote) and bool(text) and (quote in text or text in quote)
+    matches: it would otherwise be contained in everything.
+
+    A bare name is not prose. The object's quote must be a requirement-bearing span, tested with the same
+    `CANDIDATE_RE` the extraction stage marks a candidate sentence with, because a requirement's `text` is
+    an obligation and "the same prose" can only mean that obligation sentence. Without the gate the model
+    stage's own contract defeated the rule: it asks for a verbatim substring that *names* the object, so
+    465 of 921 objects of the last real run quoted their bare name, which is contained in nearly every
+    requirement text of its clause. Containment then decided nothing and rule (b) was again the
+    name-occurrence heuristic D31 abolished, deleting 524 of 5153 items instead of 26."""
+    return bool(quote) and bool(text) and CANDIDATE_RE.search(quote) is not None and (quote in text or text in quote)
 
 
 def group_generics(items: list[CoverageItem], objs: list[TestObject]) -> list[CoverageItem]:
@@ -204,33 +213,64 @@ def group_generics(items: list[CoverageItem], objs: list[TestObject]) -> list[Co
     return out
 
 
-def drop_overlaps(items: list[CoverageItem], reqs: list[Requirement], objs: list[TestObject]) -> list[CoverageItem]:
+def drop_overlaps(items: list[CoverageItem], reqs: list[Requirement], objs: list[TestObject],
+                  log=None) -> list[CoverageItem]:
     """Rule (b) of D25 as amended by D31: drop a requirement-derived item when an object of the same clause
     was derived from the same prose and carries a check of the same family. Provenance is the test, not the
     occurrence of the object's name in the requirement's text: a name is a word of ordinary English as often
     as it is a reference, and a limit declared on an object is not the limit a sentence states. The check
     family is still consulted, so an item is dropped only where the object really has a counterpart.
-    Compared against the items that survived rule (a)."""
+    Compared against the items that survived rule (a).
+
+    Every removal is logged, one line naming the item, its suppressor and the quote, then one total: this
+    rule deletes test purposes, and the silence is what let it degenerate unnoticed through two reviews."""
+    log = _stderr if log is None else log
     quotes = {o.id: norm(o.source_quote) for o in objs}
     covered: dict[tuple[str, str], set[str]] = {}
+    owner: dict[tuple[str, str], str] = {}
     for i in items:
         quote = quotes.get(i.source_id)
         if quote:
             covered.setdefault((i.clause_id, quote), set()).add(i.check)
+            owner.setdefault((i.clause_id, quote), i.source_id)
     texts = {r.id: norm(r.text) for r in reqs}
 
-    def duplicated(i: CoverageItem) -> bool:
+    def suppressor(i: CoverageItem) -> tuple[str, str] | None:
+        """The first (clause, quote) whose object covers this item's check family off the same prose, in
+        insertion order, so the line logged for one run is the line logged for the next."""
         text = texts.get(i.source_id)
         if text is None or i.check not in OVERLAP:
-            return False
-        return any(checks.intersection(OVERLAP[i.check]) and same_prose(quote, text)
-                   for (clause, quote), checks in covered.items() if clause == i.clause_id)
+            return None
+        return next((key for key, checks in covered.items()
+                     if key[0] == i.clause_id and checks.intersection(OVERLAP[i.check])
+                     and same_prose(key[1], text)), None)
 
-    return [i for i in items if not duplicated(i)]
+    kept, dropped = [], []
+    for i in items:
+        key = suppressor(i)
+        if key is None:
+            kept.append(i)
+        else:
+            dropped.append(i)
+            log(f"deflation rule (b): dropped {i.id} ({i.kind}), the same prose as {owner[key]}, "
+                f"quote {key[1]!r}: {i.purpose}")
+    if dropped:
+        by_kind = Counter(i.kind for i in dropped)
+        log(f"deflation rule (b): {len(dropped)} of {len(items)} coverage items dropped as duplicates of an "
+            + "object read off the same prose ("
+            + ", ".join(f"{by_kind[k]} {k}" for k in ("nominal", "negative", "boundary") if by_kind[k]) + ")")
+    return kept
+
+
+def _stderr(line: str) -> None:
+    """Rule (b) reports on the stream every stage of the pipeline already reports on. A caller that has a
+    `log` of its own passes it; `tpg.pipeline` could pass its own and should, but it is not this task's
+    file to change, and the default must not be silence."""
+    print(line, file=sys.stderr)
 
 
 def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem],
-           deflate: bool = True) -> list[CoverageItem]:
+           deflate: bool = True, log=None) -> list[CoverageItem]:
     items: list[CoverageItem] = []
     prohibitions = {r.id for r in reqs if r.modality in ("shall_not", "should_not")}
     for i in ics:
@@ -243,5 +283,5 @@ def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem],
         items.extend(derive_inopportune(o))
     if deflate:
         items = group_generics(items, objs)      # first, so a reference site no longer looks like a ladder
-        items = drop_overlaps(items, reqs, objs)  # then, against what rule (a) left standing
+        items = drop_overlaps(items, reqs, objs, log)  # then, against what rule (a) left standing
     return items
