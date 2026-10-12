@@ -1,5 +1,5 @@
 """ingest -> grammar -> extract -> model -> ICS -> derive -> generate -> plan. One `log` line per stage
-with its counts, including the ICS total and the ICS coverage that is the headline metric (D21, D27).
+with its counts, including the ICS item count and the ICS coverage invariant (D21, D27).
 
 Given `out`, the run also persists as it goes, because the run it is built for takes hours: before the
 first generation call `<out>.partial.json` holds the whole plan but its test cases, and during
@@ -76,7 +76,9 @@ def ics_coverage(ics: list[ICSItem], items: list[CoverageItem]) -> tuple[int, in
 
 
 def ics_coverage_line(ics: list[ICSItem], items: list[CoverageItem]) -> str:
-    """The headline metric as one line. A document from which no feature was read has no criterion to
+    """The D21 invariant as one line, not a score: a capability item exists for every due ICS item by
+    construction, so this cannot read below 100 per cent without a defect and the informative figure
+    beside it is the item count. A document from which no feature was read has no criterion to
     satisfy, so it reports no figure rather than a vacuous 100 per cent."""
     cov, due = ics_coverage(ics, items)
     if not due:

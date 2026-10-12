@@ -35,7 +35,7 @@ def _assert_plan_is_sound(plan, path):
     for o in plan.objects:
         assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
     # D21: every feature the ICS declares mandatory or optional is covered by at least one item, which
-    # is the X.291 clause 10.4 criterion and the headline metric, so the run must reach 100 per cent
+    # is the X.291 clause 10.4 criterion, held by construction, so the run must reach 100 per cent
     covered_sources = {c.source_id for c in plan.coverage_items}
     for i in plan.ics:
         if i.status in ("mandatory", "optional"):
