@@ -409,3 +409,71 @@ def test_html_navigation_is_not_clause_structure(tmp_path):
     assert [(c.id, c.title) for c in clauses] == [("1", "Scope"), ("2", "Requirements")]
     assert clauses[0].text == "This document applies to the unit."
     assert "See Section 1." in clauses[1].text
+
+
+def test_typographic_quotes_in_a_cddl_declaration_are_read(tmp_path):
+    """A publisher's layout tool turns the straight quotation mark RFC 8610 requires into a curly
+    pair, and the PDF reports the pair faithfully. No member of the declaration then parses, and
+    because the handler's own parser is its acceptance gate, the whole declaration is suppressed.
+    Written with escapes, never with the characters themselves, so this file stays ASCII."""
+    from tpg.grammar import harvest
+    md = tmp_path / "c.md"
+    md.write_text(
+        "## 8.2 WebAPI\n\nThe following CDDL structure defines the request structure.\n\n"
+        "OnlineRequest = {\n"
+        "\u201cversion\u201d : tstr,     ; Version of the structure, currently 1.0\n"
+        "\u201ctoken\u201d : tstr,       ; Token\n"
+        "? \u201cdocType\u201d : tstr,   ; Optional doctype field\n"
+        "\u201cnameSpaces\u201d : NameSpaces\n"
+        "}\n", encoding="utf-8")
+    clause = ingest(str(md))[0]
+    names = [d.name for d in harvest(clause)]
+    assert "OnlineRequest" in names
+    assert {"version", "token", "docType", "nameSpaces"} <= set(names)
+
+
+def test_typographic_punctuation_becomes_the_ascii_character_it_stands_for(tmp_path):
+    """Quotation marks, apostrophes and dashes, each named by escape. The range an en dash breaks
+    and the apostrophe a right single quotation mark breaks are the sibling cases of the quote."""
+    md = tmp_path / "p.md"
+    md.write_text("## 5.1 Codes\n"
+                  "label: tstr .size (1\u20132),\n"
+                  "The \u2018code\u2019 and the \u201cname\u201d of the issuer\u2019s mDL \u2014 see 7.3.2 \u2010 shall match.\n",
+                  encoding="utf-8")
+    text = ingest(str(md))[0].text
+    assert "label: tstr .size (1-2)," in text
+    assert "The 'code' and the \"name\" of the issuer's mDL - see 7.3.2 - shall match." in text
+    assert text.isascii()
+
+
+def test_general_punctuation_quotes_and_dashes_are_all_covered(tmp_path):
+    """The inclusion rule, executable: a character of the General Punctuation block is normalised
+    exactly when it is a dash (category Pd) or a quotation mark that is not an angle one - the
+    characters whose only difference from an ASCII character is how they are drawn. Everything else
+    in the block means more than its shape and is left alone: a prime is a unit, a hyphenation point
+    marks where a word may break, an angle quotation mark is another language's quoting convention,
+    an ellipsis and a bullet stand for no single ASCII character."""
+    import unicodedata
+    from tpg.ingest import TYPOGRAPHIC
+    for cp in range(0x2000, 0x2070):
+        name = unicodedata.name(chr(cp), "")
+        restyled = (unicodedata.category(chr(cp)) == "Pd"
+                    or (name.endswith("QUOTATION MARK") and "ANGLE" not in name))
+        assert restyled == (cp in TYPOGRAPHIC), f"U+{cp:04X} {name}"
+    assert set(TYPOGRAPHIC.values()) == {"-", "'", '"'}
+    for cp in (0x2026, 0x2027, 0x2032, 0x2033, 0x2022, 0x2039, 0x2044, 0x2003, 0x202f):
+        assert cp not in TYPOGRAPHIC, unicodedata.name(chr(cp))
+
+
+@pytest.mark.xfail(strict=True, reason="tpg.extract.norm does not share this normalisation; "
+                                       "see .superpowers/sdd/2026-10-12-conformance-methodology/task-14-report.md")
+def test_a_quote_written_with_a_curly_quote_still_grounds(tmp_path):
+    """The grounding check compares normalised forms (tpg.extract.norm), and an LLM quoting a clause
+    may write the quotation mark the way a publisher would. Normalising the clause text here without
+    normalising the quote there turns a verbatim quote into an ungrounded one. The two normalisations
+    have to agree; `norm` lives outside this file and cannot be changed from here."""
+    from tpg.extract import norm
+    md = tmp_path / "q.md"
+    md.write_text("## 5.1 Codes\nThe \u201ctoken\u201d attribute identifies the mDL.\n", encoding="utf-8")
+    clause = ingest(str(md))[0]
+    assert norm("The \u201ctoken\u201d attribute identifies the mDL.") in norm(clause.text)

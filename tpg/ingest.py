@@ -34,6 +34,23 @@ LIGATURES = str.maketrans({"\x01": "fi", "\x02": "fl", "\x03": "ff", "\x04": "fl
 # two and lets page furniture survive inside clause text.
 CONTROL = {c: None for c in [*range(0, 9), 11, *range(14, 32), 0xFEFF, 0x200B]}
 
+# Typographic punctuation: the ASCII character the author typed, restyled by a layout tool and then
+# reported faithfully by the PDF. It is a typesetting artefact, not what the document says, and it
+# defeats every formal notation that spells a construct with one of these characters - CDDL's and
+# ABNF's and JSON Schema's and ASN.1's quoted strings, a CDDL or ABNF range written with an en dash,
+# anything built on an apostrophe. The set is the quotation-mark and dash runs of the General
+# Punctuation block (U+2000-U+206F), taken whole rather than per document: each differs from its
+# ASCII counterpart only in how it is drawn - shape, width, or whether a line may break at it - so
+# one ASCII character carries the same meaning: the dashes (category Pd) and the quotation marks bar
+# the angle ones. What is left alone is what means more than its shape: a prime (a unit), a
+# hyphenation point (where a word may break), an angle quotation mark (another language's quoting
+# convention, not a restyled ASCII quote), an ellipsis and a bullet (no single ASCII character stands
+# for either), and the fixed-width spaces, which `str.split`, `str.strip` and a Unicode `\s` already
+# treat as the spaces they are.
+TYPOGRAPHIC = ({c: "-" for c in range(0x2010, 0x2016)}      # hyphen through horizontal bar
+               | {c: "'" for c in range(0x2018, 0x201C)}    # the four single quotation marks
+               | {c: '"' for c in range(0x201C, 0x2020)})   # the four double quotation marks
+
 
 def table_rows(rows: list[list[str]]) -> str:
     """Row records: 'Header: cell | Header: cell' per data row; an empty first cell inherits the
@@ -247,7 +264,7 @@ def read_pages(path: str) -> list[str]:
                 lines.append("\f")
             lines.append(re.sub(r"^#+\s*", "", line))
         pages = _pages("\n".join(lines))
-    return strip_repeated([pg.replace("\u00ad", "").translate(CONTROL) for pg in pages])
+    return strip_repeated([pg.replace("\u00ad", "").translate(CONTROL | TYPOGRAPHIC) for pg in pages])
 
 
 def strip_repeated(pages: list[str]) -> list[str]:
