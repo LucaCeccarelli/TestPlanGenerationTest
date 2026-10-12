@@ -1,6 +1,12 @@
-"""Throwaway evaluation: for each ground-truth 18013-6 test case, retrieve the closest generated test cases
-by token overlap, then ask the model whether any of them verifies the same thing. Writes eval/judge_results.json."""
-import collections, json, math, os, re, sys, time
+"""Evaluation: for each official test case, retrieve the closest generated test cases by token overlap,
+then ask the model whether any of them verifies the same thing. Writes eval/judge_results.json.
+
+This figure is never reported alone. The judge is drawn from the same model family as the generator,
+which the literature shows inflates scores through self-preference, and the retrieval in front of it is
+lexical, so it caps what the judge can even see. `match_structural.py` is the model-free counterpart and
+`summarise.py` prints the two side by side.
+"""
+import collections, json, math, os, pathlib, re, sys, time
 from pydantic import BaseModel
 from tpg.llm import OllamaLLM, load_dotenv
 
@@ -28,8 +34,17 @@ Question: does at least one candidate verify the SAME check as the official test
 Reply with JSON only: {{"covered": true|false, "best_candidate": "<candidate id or null>", "reason": "<one sentence>"}}"""
 
 def main(plan_path, gt_path, out_path, model=None, limit=None, k=5):
+    print("== coverage of the official suite, LLM judge")
+    missing = [p for p in (plan_path, gt_path) if not pathlib.Path(p).exists()]
+    if missing:
+        print("missing input:", ", ".join(missing), "- nothing to judge"); return
     load_dotenv()
-    llm = OllamaLLM(model=model or os.environ.get("TPG_EVAL_MODEL", "gemma4:31b")); llm.check()
+    llm = OllamaLLM(model=model or os.environ.get("TPG_EVAL_MODEL", "gemma4:31b"))
+    try:
+        llm.check()
+    except Exception as e:
+        print(f"no model available ({type(e).__name__}: {str(e)[:160]});"
+              " the structural matcher is the model-free coverage figure"); return
     plan = json.load(open(plan_path)); gt = json.load(open(gt_path))
     reqs = {r["id"]: r for r in plan["requirements"]}
     for o in plan.get("objects", []):

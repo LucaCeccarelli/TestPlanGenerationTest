@@ -2,15 +2,22 @@
 truth. Expects each test case to be a block of labelled fields (Test case ID, Purpose, Test scenario,
 Expected results, ...), which is how the ISO/IEC TS 18013-6 appendices are written.
 
+Each case also carries the `(check_type, data_item)` pair that `match_structural` infers by rule from
+its purpose and scenario, so the judge-free matcher can be audited straight off the ground truth.
+
 Usage: parse_appendices.py <directory of PDFs> <output json>
 """
 import collections, glob, json, re, sys
 
 import pymupdf as fitz
 
+from match_structural import CHECK_TYPES, annotate
+
 FIELDS = ["Test case ID", "System under test", "Purpose", "Reference", "Technology", "Profile",
           "Preconditions", "Test scenario", "Expected results"]
-HEADER_RE = re.compile(r"^(ISO/IEC TS 18013-6:2025\(E\)|© ISO 2025 – All rights reserved|\d{1,3})\s*$")
+# The running header and footer of a published ISO document, plus a bare page number. The copyright
+# sign and en dash are escaped so the source stays ASCII.
+HEADER_RE = re.compile(r"^(ISO/IEC TS 18013-6:2025\(E\)|\u00a9 ISO 2025 \u2013 All rights reserved|\d{1,3})\s*$")
 START_RE = re.compile(r"^(\d+(?:\.\d+)*)\s*(?:\n)?Test case (\S+)\s*$", re.M)
 CLAUSE_RE = re.compile(r"ISO/IEC 18013-5:2021,\s*([A-Z]?\d+(?:\.\d+)*)")
 
@@ -49,6 +56,7 @@ def parse(path, appendix):
                       "technology": fields.get("Technology", ""), "profile": fields.get("Profile", ""),
                       "preconditions": fields.get("Preconditions", ""),
                       "scenario": fields.get("Test scenario", ""), "expected": fields.get("Expected results", "")})
+        cases[-1].update(annotate(cases[-1]))
     return cases
 
 if __name__ == "__main__":
@@ -66,3 +74,6 @@ if __name__ == "__main__":
     print("top clauses:", clauses.most_common(12))
     empt = [c["id"] for c in allc if not c["scenario"] or not c["expected"]]
     print("cases missing scenario/expected:", len(empt), empt[:5])
+    types = collections.Counter(c["check_type"] for c in allc)
+    print("inferred check types:", [(t, types[t]) for t in CHECK_TYPES + [None]])
+    print("cases with an inferred data item:", sum(1 for c in allc if c["data_item"]), "of", len(allc))

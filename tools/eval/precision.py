@@ -1,6 +1,6 @@
 """Throwaway evaluation: sample generated test cases and ask the model whether each is grounded in its
 requirement, actionable, and has a correct expected result. Writes eval/precision_results.json."""
-import json, os, random, sys, time
+import json, os, pathlib, random, sys, time
 from pydantic import BaseModel
 from tpg.llm import OllamaLLM, load_dotenv
 from tpg.ingest import ingest
@@ -34,7 +34,15 @@ Judge three things:
 Reply with JSON only: {{"grounded": true|false, "actionable": true|false, "expected_correct": true|false, "reason": "<one sentence>"}}"""
 
 def main(plan_path, std_path, out_path, n=60, model=None, seed=1):
-    load_dotenv(); llm = OllamaLLM(model=model or os.environ.get("TPG_EVAL_MODEL", "gemma4:31b")); llm.check()
+    print("== precision of generated cases, LLM judge")
+    missing = [p for p in (plan_path, std_path) if not pathlib.Path(p).exists()]
+    if missing:
+        print("missing input:", ", ".join(missing), "- nothing to audit"); return
+    load_dotenv(); llm = OllamaLLM(model=model or os.environ.get("TPG_EVAL_MODEL", "gemma4:31b"))
+    try:
+        llm.check()
+    except Exception as e:
+        print(f"no model available ({type(e).__name__}: {str(e)[:160]}); no precision sample"); return
     plan = json.load(open(plan_path)); reqs = {r["id"]: r for r in plan["requirements"]}
     for o in plan.get("objects", []):
         reqs[o["id"]] = {"id": o["id"], "clause_id": o["clause_id"], "modality": "object", "source_quote": o["source_quote"],
