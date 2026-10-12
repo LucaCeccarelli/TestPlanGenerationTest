@@ -61,9 +61,47 @@ def table_rows(rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
+LINK = ("\x11", "\x12")   # brackets the text a hyperlink contributes, so that after the parse a
+HEAD = "\x13"             # link can be told from the prose around it, a heading from a paragraph,
+BOUND = "\x14"            # and one block element from the next - a newline cannot, since a block
+                          # of prose is wrapped over as many source lines as the markup likes
+LINKED_RE = re.compile(f"{LINK[0]}([^{LINK[1]}\n]*){LINK[1]}")
+# ponytail: all four are C0 controls, so read_pages' CONTROL table erases any that an unclosed
+# tag leaves behind - markup cannot smuggle them in either, they never survive into clause text
+
+
+def _undecorate(text: str) -> str:
+    """Drop the text of a hyperlink that carries no letter and no digit. A heading that links to
+    itself with a pilcrow, a section sign, a link glyph or an upward arrow is a widespread
+    convention across publishers; such a link is decoration for the eye, and no title or sentence
+    is made of punctuation alone. A link with a word or a number in it is content and is kept."""
+    return LINKED_RE.sub(lambda m: m.group(1) if any(c.isalnum() for c in m.group(1)) else "", text)
+
+
+def _html_text(text: str) -> str:
+    """Resolve the marks, one block element at a time. A block outside a heading whose every
+    letter and digit comes from hyperlink text is navigation - a table of contents, an index, a
+    menu, a breadcrumb - and not body text: it is written to be clicked, not read. Left in, a
+    table of contents reads as a full run of numbered headings with nothing under them, and the
+    body headings that follow are then out of sequence, so the whole document lands in one clause.
+    A heading element is exempt, because a heading that links to itself is still a heading. The
+    test is per block and not per line because a line of a paragraph can hold nothing but a
+    bracketed cross-reference while the paragraph around it is prose."""
+    out = []
+    for block in text.split(BOUND):
+        head = HEAD in block
+        block = block.replace(HEAD, "")
+        if not head and LINKED_RE.search(block) and not any(c.isalnum() for c in LINKED_RE.sub("", block)):
+            out.append("\f" * block.count("\f") + "\n")   # the page break belongs to what follows
+        else:
+            out.append(_undecorate(block))
+    return "".join(out)
+
+
 class _Text(HTMLParser):
     BLOCK = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "section"}
     HEADING = {"h1", "h2"}
+    HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 
     def __init__(self):
         super().__init__()
@@ -71,6 +109,13 @@ class _Text(HTMLParser):
         self._skip = 0
         self._rows: list[list[str]] | None = None
         self._cell: list[str] | None = None
+        self._head: int | None = None
+
+    def _emit(self, text):
+        if self._cell is not None:
+            self._cell.append(text)
+        elif self._rows is None:
+            self.parts.append(text)
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
@@ -81,30 +126,39 @@ class _Text(HTMLParser):
             self._rows.append([])
         elif tag in ("td", "th") and self._rows is not None:
             self._cell = []
+        elif tag == "a":
+            self._emit(LINK[0])
         if tag in self.HEADING:
             self.parts.append("\f")
         if tag in self.BLOCK:
-            self.parts.append("\n")
+            self.parts.append(BOUND + "\n")
+        if tag in self.HEADINGS and self._cell is None and self._rows is None:
+            self._head = len(self.parts)
 
     def handle_endtag(self, tag):
         if tag in ("script", "style"):
             self._skip -= 1
         elif tag in ("td", "th") and self._rows is not None and self._cell is not None:
-            self._rows[-1].append(" ".join("".join(self._cell).split()))
+            self._rows[-1].append(" ".join(_undecorate("".join(self._cell)).split()))
             self._cell = None
         elif tag == "table" and self._rows is not None:
             self.parts.append("\n" + table_rows(self._rows) + "\n")
             self._rows = None
+        elif tag == "a":
+            self._emit(LINK[1])
+        if tag in self.HEADINGS and self._head is not None:
+            # A heading element is one heading however its markup is laid out across lines.
+            title = " ".join("".join(self.parts[self._head:]).replace(BOUND, " ").split())
+            del self.parts[self._head:]
+            self.parts.append(HEAD + title)
+            self._head = None
         if tag in self.BLOCK:
-            self.parts.append("\n")
+            self.parts.append("\n" + BOUND)
 
     def handle_data(self, data):
         if self._skip:
             return
-        if self._cell is not None:
-            self._cell.append(data)
-        elif self._rows is None:
-            self.parts.append(data)
+        self._emit(data)
 
 
 def _pages(text: str) -> list[str]:
@@ -184,7 +238,7 @@ def read_pages(path: str) -> list[str]:
     elif suffix in (".html", ".htm"):
         parser = _Text()
         parser.feed(p.read_text(errors="replace"))
-        pages = _pages("".join(parser.parts))
+        pages = _pages(_html_text("".join(parser.parts)))
     else:
         text = p.read_text(errors="replace")
         lines = []

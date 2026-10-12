@@ -346,7 +346,7 @@ def test_openid_pdf_finds_lowercase_identifier_clauses():
     assert {"5.8", "E.1.1", "E.2.2", "E.8.1", "15.9.1"} <= ids
 
 
-@pytest.mark.parametrize("name", ["OpenID4VP1-0.pdf", "RFC8949.pdf", "iso_18013_5.pdf"])
+@pytest.mark.parametrize("name", ["OpenID4VP1-0.pdf", "RFC8949.pdf", "iso_18013_5.pdf", "RFC8949.html"])
 def test_no_clause_absorbs_an_implausible_share_of_a_document(name):
     """A heading rule that is too permissive shows up as one clause swallowing the rest of the
     document, so cap the largest clause's share of the whole text."""
@@ -366,3 +366,46 @@ def test_iso_pdf_segments_every_numbered_heading():
     assert len(ids) == 265
     assert {"8.2.1.1.2.1", "8.2.1.1.2.2", "8.2.1.1.2.3", "8.2.1.2.3.1", "8.2.1.2.3.2",
             "8.2.2.1.1", "9.2.1.4", "E"} <= ids
+
+
+def test_html_heading_keeps_the_text_that_falls_under_it():
+    """The RFC Editor rendering puts every section under its own heading element and links each
+    heading to itself. Body text must reach the clause it sits under, and the self-link must not
+    become part of the title."""
+    clauses = {c.id: c for c in ingest(str(FIX / "RFC8949.html"))}
+    assert len(clauses) >= 70
+    assert sum(1 for c in clauses.values() if c.text) >= 60
+    assert "hundreds of standardized formats" in clauses["1"].text
+    assert clauses["1"].title == "Introduction"
+    assert "Jump Table" in clauses["B"].title
+    assert sum(1 for c in clauses.values() if re.search(r"\b(shall|must|should|MUST|SHALL|SHOULD)\b", c.text)) >= 20
+
+
+def test_html_titles_carry_no_permalink_decoration():
+    """A heading that links to itself with a pilcrow, a section sign or a link glyph is a
+    widespread convention; the glyph is decoration, not title text."""
+    for c in ingest(str(FIX / "RFC8949.html")):
+        assert not any(ch in c.title for ch in "\u00b6\u00a7\u00b0\u25b2"), c.title
+
+
+def test_html_navigation_is_not_clause_structure(tmp_path):
+    """A block whose every word comes from a hyperlink is navigation - a table of contents, an
+    index, a menu - not body text; read as headings it would hand later stages a run of empty
+    clauses, and leave the body headings that follow out of sequence. A heading element is exempt:
+    a heading that links to itself is still a heading."""
+    h = tmp_path / "t.html"
+    h.write_text(
+        "<body><nav><ul>"
+        '<li><p><a href="#s1">1</a>.\u00a0\u00a0<a href="#n1">Scope</a><a href="#t1">\u00b6</a></p></li>'
+        '<li><p><a href="#s2">2</a>.\u00a0\u00a0<a href="#n2">Requirements</a><a href="#t2">\u00b6</a></p></li>'
+        "</ul></nav>"
+        '<section><h2>\n<a href="#s1" class="selfRef">1. </a><a href="#n1" class="selfRef">Scope</a>'
+        '<a href="#s1" class="pilcrow">\u00b6</a>\n</h2>'
+        '<p>This document applies to the unit.<a href="#p1" class="pilcrow">\u00b6</a></p></section>'
+        '<section><h2>2. Requirements</h2>'
+        '<p>The unit shall respond. See <a href="#s1">Section 1</a>.</p></section></body>',
+        encoding="utf-8")
+    clauses = ingest(str(h))
+    assert [(c.id, c.title) for c in clauses] == [("1", "Scope"), ("2", "Requirements")]
+    assert clauses[0].text == "This document applies to the unit."
+    assert "See Section 1." in clauses[1].text
