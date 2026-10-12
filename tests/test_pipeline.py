@@ -205,7 +205,7 @@ def test_run_persists_the_stages_before_generation(tmp_path):
     out = tmp_path / "plan.json"
     with pytest.raises(MemoryError):
         run(str(FIX / "sample.md"), DyingLLM(list(SCRIPT_54), fallback=TC), model="fake", out=str(out))
-    assert not out.exists(), "the probe must not leave an empty plan behind"
+    assert not out.exists(), "the plan itself stays the callers to write, so a crash leaves no half one"
     partial = json.loads((tmp_path / ("plan.json" + PARTIAL_SUFFIX)).read_text())
     assert [r["id"] for r in partial["requirements"]] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
     assert partial["objects"] and partial["ics"] and partial["coverage_items"]
