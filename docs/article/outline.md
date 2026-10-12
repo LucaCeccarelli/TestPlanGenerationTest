@@ -321,6 +321,7 @@ ingest  ->  grammar (deterministic objects from declarations)
 | D27 | Evaluation with **three denominators**, a **judge-free structural matcher** on data item plus check type, **ICS coverage** as the headline, and macro averages | removes the same-family judge from the headline number |
 | D28 | Chunk limit 3000, salvage of a truncated reply's complete elements, and **row accounting**: the ingest counts table rows so the model stage can be re-prompted for the rows it did not return | the 361 rows that produced 4 objects |
 | D29 | Recorded as deliberately **not** done: the ICS factoring rule of ETS 300 406 Annex A.2, the two-stage combination deflation of X.291 clause 10.3.3, human calibration of the judge | honest gaps, each needing data the model does not carry or human labelling |
+| D30 | **Direction selects the wording of a negative coverage item, never its existence.** The invalid-side items are emitted for every object; for a received object the purpose asks that an invalid instance be supplied and rejected, for a produced or internal one that the implementation never produce or hold it | an amendment forced by measurement, see 6.4 |
 
 ### 6.3 The choices, and what was rejected
 
@@ -345,13 +346,79 @@ ingest  ->  grammar (deterministic objects from declarations)
 - **Target restated honestly:** 85 to 90 per cent is attainable on ICS and requirement coverage, and
   is not attainable on strict per-case matching, where the realistic band is 35 to 60 per cent.
 
-### 6.4 Results
+### 6.4 What building it changed: four amendments forced by measurement
 
-To be filled from the next full run on a local 31B model, reporting: ICS items and ICS coverage,
-objects by origin prose against grammar, coverage items by test group, the structural match rate
-beside the LLM judge rate, the three denominators, and wall time against the previous 12.7 hours.
+Each stage was probed on the real 126-page fixture as it was built, which is how the following were
+found. They are the honest part of the story: a design that looked complete on paper lost most of
+its reach to four defects that only a count could reveal.
 
-### 6.5 Sources added
+**The invalid half of the ladder was unreachable (amended as D30).** The specification gated the
+negative coverage items on an object's `direction` being `received`. Measured on the fixture, that
+gate produced 250 coverage items containing zero `encoding_invalid`, zero `value_invalid`, zero
+`boundary_outside` and zero negative `absence`, for all 83 grammar-derived objects. Objects
+harvested from a formal grammar have no prose author to state a direction, and the model prompt
+deliberately does not ask for one twice, so the gate could never be satisfied. 29119-4 clause 5.2.4
+applies to an encoder and a decoder alike: one must not emit an invalid encoding, the other must
+reject it. Both are test purposes, so the obligation is to word them differently, not to drop one.
+Removing the gate took the fixture from 281 items with no invalid side to 383 items with 62
+`encoding_invalid` and 40 negative `absence`. This was a specification error, not an implementation
+error, and it is recorded as one.
+
+**The grammar stage was losing a third of what it harvested.** Probing the four handlers on the
+fixture rather than on synthetic blocks found: a member sharing a line with its closing bracket was
+dropped, losing 2 of the 4 real ASN.1 members; the ABNF detector fired on CDDL rule heads, typing 11
+of 94 objects as a bracket; the merge collapsed same-named members of different structures, absorbing
+11 of 94 and reducing one name declared with three distinct types to one; and CDDL comments leaked
+into the type field of 35 of 94. Four defects, none of which a unit test on a well-formed block would
+have shown.
+
+**Ingest caps the whole pipeline, and did so silently.** The rebuilt harness measured which clause
+ids are ever segmented: 265 for the entire standard. Among the clauses that official tests cite but
+that ingest never produces are `8.3.2.1.2.2`, cited by 88 official cases, `9.1.1.4` by 64, and
+`8.3.2.1.2.3` by 32. Deeply nested headings, five and six numbering levels deep, were not
+recognised. A clause that is never segmented yields no requirement, no object and no test case, so
+roughly a quarter of the usable ground truth was out of reach before any LLM ran. This reframes the
+earlier diagnosis: the bottleneck we attributed to extraction and granularity was in part a reading
+defect two stages earlier.
+
+**Deflation is real but not free.** The generic-group rule alone removes 16.2 per cent of coverage
+items on the fixture, 321 to 269, with 18 reference items over 8 groups, before any requirement
+overlap is considered. Its risk is symmetric and worth stating: it keys on the object's name, so a
+structure genuinely constrained differently at two sites collapses to one ladder plus a pointer.
+`--no-deflate` exists so the cost can be measured rather than assumed, and the run reports both.
+
+### 6.5 Results
+
+**Measurement first, on the previous run's artefacts.** Rebuilding the metric before rebuilding the
+generator was the right order, because it moved the headline up rather than down and told us how much
+of the old 13.8 per cent was a measurement artefact.
+
+| Scope | LLM judge | Judge-free structural matcher |
+|---|---|---|
+| All official cases citing a clause of the standard | 13.8 per cent (95 of 687) | **22.5 per cent** (168 of 747 scorable) |
+| Scored in-edition subset | 16.8 per cent (of 250) | **18.8 per cent** |
+| Macro average over official test families | 11.5 per cent | 17.5 per cent |
+
+The two methods agree on 73.4 per cent of the cases both can score, which is the result that matters:
+the structural matcher is not merely a looser judge. A 20-case hand audit of the rule-based inference
+gets the check type right 15 times and the data item right 10 times plus 3 correct nulls, and every
+error mode observed produces a false negative, so 22.5 per cent is a lower bound. Two honest limits:
+the matcher needs a source object, and requirement-derived items carry no name, so 1575 of 3257
+coverage items cannot be scored by it at all; and because ingest segments only 265 clauses, the
+in-edition denominator of 250 is a floor measured on the wrong 250.
+
+**Three denominators, stated rather than chosen silently.** 907 official cases in all; 687 citing a
+clause of the standard under test; 250 whose cited clause id actually exists in the input edition.
+The third is the only honest one without a semantic crosswalk between the 2020 draft and the 2021
+published edition, and it is the one scored.
+
+**To be filled from the next full run** on a local 31B model: ICS items and ICS coverage, which is
+the metric that needs no official suite and therefore transfers to any standard; objects by origin,
+prose against grammar; coverage items by test group; the structural match rate beside the judge rate
+on the new plan; and wall time against the previous 12.7 hours, with the LLM call count under batched
+and per-item generation.
+
+### 6.6 Sources added
 
 `[S45]` Masuda et al., arXiv:2510.03641. `[S46]` ITU-T X.291 (04/1995) = ISO/IEC 9646-2, clauses
 10.2 to 10.4, 11, Annex D. `[S47]` ETSI ETR 266 (1996), Test Purpose style guide. `[S48]` ETSI IPv6
