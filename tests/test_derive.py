@@ -4,7 +4,7 @@ import pytest
 
 from tpg.derive import GROUP, derive, derive_object, derive_requirement, group_for
 from tpg.ics import build_ics
-from tpg.models import Check, Requirement, TestObject
+from tpg.models import Check, Kind, Requirement, TestObject
 
 
 def req(**kw):
@@ -63,6 +63,23 @@ def test_object_type_value_size_relations():
     assert "nonce" in p and "present" in p
 
 
+def test_boundary_items_need_a_number_in_the_size():
+    """An occurrence marker such as "*" reaches `size` from a grammar declaration and states no limit."""
+    numeric = checks(derive_object(obj(presence="mandatory", direction="received", size="16 to 64 characters")))
+    assert [c for c, _ in numeric if c.startswith("boundary")] == ["boundary_min", "boundary_max", "boundary_outside"]
+    for size in ("*", "+", "one or more"):
+        got = checks(derive_object(obj(presence="mandatory", direction="received", size=size)))
+        assert [c for c, _ in got if c.startswith("boundary")] == [], size
+
+
+def test_capability_purpose_of_a_prohibition_is_not_phrased_as_support():
+    reqs = [req(text="The device shall not process the request.", modality="shall_not"),
+            req(id="REQ-5.1-2", text="The device shall respond.", modality="shall")]
+    caps = {i.source_id: i.purpose for i in derive(reqs, [], build_ics(reqs, [])) if i.check == "capability"}
+    assert caps["REQ-5.1-1"] == "Verify that the implementation enforces: The device shall not process the request."
+    assert caps["REQ-5.1-2"] == "Verify that the implementation supports The device shall respond."
+
+
 def test_produced_objects_get_no_invalid_stimuli():
     o = obj(presence="mandatory", direction="produced", type="text", value_domain="x", size="1 to 2")
     assert all(k != "negative" for _, k in checks(derive_object(o)))
@@ -90,15 +107,31 @@ EXPECTED_GROUPS = {
 }
 
 
+def expected_group(check, kind):
+    """`absence` is the one check whose group depends on the item: an element that may legitimately be
+    absent is valid behaviour, a missing mandatory one is invalid behaviour (X.291 clause 10.2.2)."""
+    if check == "absence" and kind == "nominal":
+        return "valid_behaviour"
+    return EXPECTED_GROUPS[check]
+
+
+@pytest.mark.parametrize("kind", get_args(Kind))
 @pytest.mark.parametrize("check", get_args(Check))
-def test_group_for_every_check(check):
-    assert group_for(check) == EXPECTED_GROUPS[check]
+def test_group_for_every_check_and_kind(check, kind):
+    assert group_for(check, kind) == expected_group(check, kind)
 
 
 def test_group_map_has_no_fall_through_and_no_extra_keys():
     assert set(GROUP) == set(get_args(Check))
     with pytest.raises(KeyError):
-        group_for("not_a_check")
+        group_for("not_a_check", "nominal")
+
+
+def test_absence_group_follows_the_kind_of_the_emitted_item():
+    optional = [i for i in derive_object(obj(presence="optional")) if i.check == "absence"]
+    assert [(i.kind, i.group) for i in optional] == [("nominal", "valid_behaviour")]
+    mandatory = [i for i in derive_object(obj(presence="mandatory", direction="received")) if i.check == "absence"]
+    assert [(i.kind, i.group) for i in mandatory] == [("negative", "invalid_behaviour")]
 
 
 def test_every_derived_item_carries_its_group():
@@ -106,7 +139,7 @@ def test_every_derived_item_carries_its_group():
     objs = [obj(presence="conditional", condition="the request asks for it", kind="message", direction="received",
                 type="text string", value_domain="one of a, b", size="1 to 2 characters", relations=["unique per session"])]
     items = derive(reqs, objs, build_ics(reqs, objs))
-    assert all(i.group == EXPECTED_GROUPS[i.check] for i in items)
+    assert all(i.group == expected_group(i.check, i.kind) for i in items)
     assert {i.group for i in items} == {"capability", "valid_behaviour", "invalid_behaviour", "inopportune_behaviour"}
 
 
@@ -144,13 +177,32 @@ def test_items_default_to_no_applicability_condition_and_no_generic_group():
 
 # --- D23 inopportune items ---
 
+def test_inopportune_item_for_a_received_message_whose_precondition_is_an_applicability_text():
+    objs = [obj(kind="message", direction="received", presence="mandatory",
+                applies_when=["the session has been established"])]
+    items = derive([], objs, build_ics([], objs))
+    inopp = [i for i in items if i.check == "inopportune"]
+    assert [(i.kind, i.group) for i in inopp] == [("negative", "inopportune_behaviour")]
+    assert inopp[0].purpose.endswith(": the session has been established")
+
+
+def test_inopportune_and_condition_false_of_one_conditional_object_are_distinguishable():
+    """Both probe the same precondition, so the purposes must tell a reader which stimulus to send."""
+    objs = [obj(kind="message", direction="received", presence="conditional", condition="the session is open")]
+    items = derive([], objs, build_ics([], objs))
+    purposes = {i.check: i.purpose for i in items}
+    assert purposes["condition_false"] != purposes["inopportune"]
+    assert "supplied" in purposes["inopportune"] and "supplied" not in purposes["condition_false"]
+    assert purposes["inopportune"].endswith(": the session is open")
+
+
 def test_inopportune_item_for_a_received_message_with_a_condition():
     objs = [obj(kind="message", direction="received", condition="the session is open", presence="conditional")]
     items = derive([], objs, build_ics([], objs))
     inopp = [i for i in items if i.check == "inopportune"]
     assert [(i.id, i.kind, i.group) for i in inopp] == [
         ("CI-OBJ-5.4-1-inopportune", "negative", "inopportune_behaviour")]
-    assert inopp[0].purpose == "Verify the handling of nonce supplied when the session is open does not hold"
+    assert inopp[0].purpose == "Verify the handling of nonce supplied although its precondition does not hold: the session is open"
 
 
 def test_no_inopportune_item_when_produced_or_not_a_message_or_structure_or_unconditioned():

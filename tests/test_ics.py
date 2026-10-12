@@ -44,10 +44,18 @@ def test_ordering_objects_then_requirements_and_id_format():
 
 
 def test_feature_is_the_object_name_or_the_truncated_requirement_text():
-    long = "The device shall " + "a" * 400
+    long = "The device shall respond to any request it receives within the deadline " + "and keep a record of it " * 20
     items = build_ics([req(text=long)], [obj(presence="optional")])
     assert items[0].feature == "nonce"
-    assert items[1].feature == long[:FEATURE_LIMIT] and len(items[1].feature) == FEATURE_LIMIT
+    feature = items[1].feature
+    assert len(feature) <= FEATURE_LIMIT
+    assert feature.endswith("...") and long.startswith(feature[:-3].rstrip())
+    assert not feature[:-3].rstrip().endswith("an")          # cut on a word boundary, not mid-word
+
+
+def test_a_single_over_long_word_still_yields_a_readable_feature():
+    items = build_ics([req(text="a" * 400)], [])
+    assert items[0].feature == "a" * (FEATURE_LIMIT - 3) + "..."
 
 
 def test_empty_feature_is_skipped():

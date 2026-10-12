@@ -9,8 +9,8 @@ BOUNDARY_RE = re.compile(r"\d+\s*(ms|s\b|sec|seconds?|minutes?|hours?|days?|byte
                          r"elements?|entries|%|mm|cm|km|m\b|kb|mb|gb)|\b(at most|at least|maximum|minimum|between|exceed|"
                          r"no more than|no less than|not exceed|up to|greater than|less than)\b", re.I)
 
-# The test group of each check (ITU-T X.291 clause 10.2.2). A check maps to exactly one group; a
-# missing key is a bug, not a default.
+# The test group of each check (ITU-T X.291 clause 10.2.2). A check maps to one group; a missing key is a
+# bug, not a default. `absence` is the exception: it is emitted both ways, so `group_for` reads its kind.
 GROUP: dict[str, Group] = {
     "presence": "valid_behaviour", "encoding_valid": "valid_behaviour", "value_valid": "valid_behaviour",
     "consistency": "valid_behaviour", "condition_true": "valid_behaviour", "nominal": "valid_behaviour",
@@ -26,7 +26,11 @@ DIRECTION = {"received": "when received by the system under test", "produced": "
              "internal": "in the system under test"}
 
 
-def group_for(check: Check) -> Group:
+def group_for(check: Check, kind: Kind) -> Group:
+    """An element that may legitimately be absent is valid behaviour; a missing mandatory one is invalid
+    behaviour. Every other check's group is fixed by the check alone."""
+    if check == "absence" and kind == "nominal":
+        return "valid_behaviour"
     return GROUP[check]
 
 
@@ -34,7 +38,7 @@ def _item(source_id: str, clause_id: str, check: Check, kind: Kind, purpose: str
           assignment: dict[str, bool] | None = None, applies_when: list[str] | None = None) -> CoverageItem:
     cid = f"CI-{source_id}-{check}" + (f"-{n}" if n is not None else "")
     return CoverageItem(id=cid, source_id=source_id, clause_id=clause_id, check=check, kind=kind,
-                        group=group_for(check), purpose=purpose, condition_assignment=assignment,
+                        group=group_for(check, kind), purpose=purpose, condition_assignment=assignment,
                         applies_when=list(applies_when or []))
 
 
@@ -86,7 +90,7 @@ def derive_object(obj: TestObject) -> list[CoverageItem]:
         add("value_valid", "nominal", f"Verify that the value of {obj.name} satisfies: {obj.value_domain}")
         if received:
             add("value_invalid", "negative", f"Verify the reaction of the system under test when the value of {obj.name} violates: {obj.value_domain}")
-    if obj.size:
+    if obj.size and any(c.isdigit() for c in obj.size):      # an occurrence marker such as "*" states no limit
         add("boundary_min", "boundary", f"Verify {obj.name} at the minimum of: {obj.size}")
         add("boundary_max", "boundary", f"Verify {obj.name} at the maximum of: {obj.size}")
         if received:
@@ -96,28 +100,38 @@ def derive_object(obj: TestObject) -> list[CoverageItem]:
     return items
 
 
-def derive_capability(ics_item: ICSItem) -> list[CoverageItem]:
-    """One capability item per ICS item the implementation must or may support (X.291 clause 10.4)."""
+def derive_capability(ics_item: ICSItem, prohibition: bool = False) -> list[CoverageItem]:
+    """One capability item per ICS item the implementation must or may support (X.291 clause 10.4). A
+    prohibition is a feature the implementation enforces rather than one it supports."""
     if ics_item.status not in ("mandatory", "optional"):
         return []
-    return [_item(ics_item.source_id, ics_item.clause_id, "capability", "nominal",
-                  f"Verify that the implementation supports {ics_item.feature}", applies_when=ics_item.applies_when)]
+    purpose = (f"Verify that the implementation enforces: {ics_item.feature}" if prohibition
+               else f"Verify that the implementation supports {ics_item.feature}")
+    return [_item(ics_item.source_id, ics_item.clause_id, "capability", "nominal", purpose,
+                  applies_when=ics_item.applies_when)]
 
 
 def derive_inopportune(obj: TestObject) -> list[CoverageItem]:
-    """A valid message or structure supplied when its stated precondition does not hold: the one X.291
-    group the valid/invalid ladders have no analogue for."""
-    if obj.direction != "received" or obj.kind not in ("message", "structure") or not (obj.condition or "").strip():
+    """A valid message or structure supplied although its stated precondition does not hold: the one
+    X.291 group the valid and invalid ladders have no analogue for. The precondition is the object's
+    applicability text when it has one, else its presence condition. This overlaps the `condition_false`
+    item of a conditional object on the precondition but not on the stimulus: there the element is
+    withheld, here it is sent anyway, so the purposes say which."""
+    if obj.direction != "received" or obj.kind not in ("message", "structure"):
+        return []
+    precondition = "; ".join(obj.applies_when) or (obj.condition or "").strip()
+    if not precondition:
         return []
     return [_item(obj.id, obj.clause_id, "inopportune", "negative",
-                  f"Verify the handling of {obj.name} supplied when {obj.condition} does not hold",
+                  f"Verify the handling of {obj.name} supplied although its precondition does not hold: {precondition}",
                   applies_when=obj.applies_when)]
 
 
 def derive(reqs: list[Requirement], objs: list[TestObject], ics: list[ICSItem]) -> list[CoverageItem]:
     items: list[CoverageItem] = []
+    prohibitions = {r.id for r in reqs if r.modality in ("shall_not", "should_not")}
     for i in ics:
-        items.extend(derive_capability(i))
+        items.extend(derive_capability(i, i.source_id in prohibitions))
     for r in reqs:
         items.extend(derive_requirement(r))
     for o in objs:

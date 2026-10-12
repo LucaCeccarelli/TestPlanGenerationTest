@@ -34,6 +34,10 @@ def _assert_plan_is_sound(plan, path):
         assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
     for o in plan.objects:
         assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
+    # D21: every feature the ICS declares mandatory or optional is covered by at least one item
+    for i in plan.ics:
+        if i.status in ("mandatory", "optional"):
+            assert any(c.source_id == i.source_id for c in plan.coverage_items), i.id
     covered = {t.coverage_item_id for t in plan.test_cases}
     for i in plan.coverage_items:
         assert i.id in covered, i.id
