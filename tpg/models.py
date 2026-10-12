@@ -296,6 +296,28 @@ class TestCaseDraft(BaseModel):
         return as_text_list(v)
 
 
+class TestCaseBatchEntry(TestCaseDraft):
+    """One entry of a batched reply: the draft fields plus the id of the coverage item it answers. Every
+    field carries a default, the id included, so one incomplete entry costs that entry alone instead of
+    the whole batch: `check_test_case` then names the empty field and only that id is re-prompted."""
+    coverage_item_id: str = ""
+    objective: str = ""
+    steps: list[str] = Field(default_factory=list)
+    expected_result: str = ""
+    pass_criteria: str = ""
+
+    @field_validator("coverage_item_id", mode="before")
+    @classmethod
+    def _id_field(cls, v: Any) -> str:
+        return as_str(v)
+
+
+class TestCaseBatch(BaseModel):
+    """LLM output schema for the coverage items of one source. One list field only, so a reply cut off by
+    the context limit is salvaged element by element by `llm.complete`."""
+    cases: list[TestCaseBatchEntry]
+
+
 class TestCase(TestCaseDraft):
     id: str
     source_id: str

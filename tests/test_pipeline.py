@@ -1,8 +1,11 @@
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
 
+from tests.conftest import FakeLLM
+from tpg.models import TestCaseBatch
 from tpg.pipeline import run
 
 FIX = Path(__file__).parent / "fixtures"
@@ -24,13 +27,26 @@ TC = {"objective": "o", "preconditions": [], "inputs": [], "steps": ["s"], "expe
       "pass_criteria": "error observed"}
 
 
+class BatchLLM(FakeLLM):
+    """The scripted fake for every stage, plus a batched generation reply carrying one case per
+    coverage item id the prompt lists, since those ids are only known once derive has run."""
+
+    def complete(self, prompt, schema):
+        if schema is TestCaseBatch:
+            self.prompts.append(prompt)
+            ids = re.findall(r"^- (CI-\S+) \(check", prompt, re.M)
+            assert ids, "batched generation prompt listed no coverage item id"
+            return schema.model_validate({"cases": [{**TC, "coverage_item_id": i} for i in ids]})
+        return super().complete(prompt, schema)
+
+
 GRAMMAR_55 = ["label", "count", "mode", "token", "prefix", "suffix", "key", "flag", "name", "state", "note"]
 
 
-def test_run_end_to_end_with_fake(fake_llm):
+def test_run_end_to_end_with_fake():
     # sample.md: clauses 1, 3, 5, 5.1, 5.2, 5.3, 5.4, 5.5; candidates in 5.1, 5.2, 5.4; rows only in 5.4;
     # formal declarations only in 5.5, which therefore costs no model-stage call.
-    llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
+    llm = BatchLLM([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
     lines = []
     plan = run(str(FIX / "sample.md"), llm, model="fake", log=lines.append)
     assert [r.id for r in plan.requirements] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
@@ -51,31 +67,39 @@ def test_run_end_to_end_with_fake(fake_llm):
     assert any("coverage items" in l for l in lines)
 
 
-def test_run_without_model_or_grammar_stage(fake_llm):
-    llm = fake_llm([REQ_51, REQ_52, REQ_54], fallback=TC)
+def test_run_without_model_or_grammar_stage():
+    llm = BatchLLM([REQ_51, REQ_52, REQ_54], fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", use_model=False, use_grammar=False)
     assert plan.objects == [] and all(i.source_id.startswith("REQ-") for i in plan.coverage_items)
 
 
-def test_run_with_grammar_but_no_model_stage(fake_llm):
+def test_run_with_grammar_but_no_model_stage():
     """The grammar stage is deterministic: without the model stage it still yields its objects."""
-    llm = fake_llm([REQ_51, REQ_52, REQ_54], fallback=TC)
+    llm = BatchLLM([REQ_51, REQ_52, REQ_54], fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", use_model=False)
     assert [o.name for o in plan.objects] == GRAMMAR_55
     assert {o.origin for o in plan.objects} == {"grammar"} and plan.gaps == []
 
 
-def test_run_without_grammar_stage_keeps_the_model_objects(fake_llm):
-    llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
+def test_run_without_grammar_stage_keeps_the_model_objects():
+    llm = BatchLLM([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", use_grammar=False)
     assert [o.id for o in plan.objects] == ["OBJ-5.4-1"] and plan.objects[0].origin == "prose"
 
 
-def test_run_clause_filter(fake_llm):
-    llm = fake_llm([REQ_52, {"objects": []}], fallback=TC)
+def test_run_clause_filter():
+    llm = BatchLLM([REQ_52, {"objects": []}], fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", clause_ids=["5.2"])
     assert {r.clause_id for r in plan.requirements} == {"5.2"}
+    # the four items of REQ-5.2-1 are one batched call, where the per-item path made four
+    assert len(plan.coverage_items) == 4 and len(llm.prompts) == 2 + 1
+
+
+def test_run_without_batching_calls_once_per_coverage_item(fake_llm):
+    llm = fake_llm([REQ_52, {"objects": []}], fallback=TC)
+    plan = run(str(FIX / "sample.md"), llm, model="fake", clause_ids=["5.2"], batch=False)
     assert len(plan.coverage_items) == 4 and len(llm.prompts) == 2 + 4
+    assert len(plan.test_cases) == 4 and plan.gaps == []
 
 
 def test_run_unknown_clause_filter_raises(fake_llm):
@@ -83,10 +107,10 @@ def test_run_unknown_clause_filter_raises(fake_llm):
         run(str(FIX / "sample.md"), fake_llm([]), model="fake", clause_ids=["9.9"])
 
 
-def test_run_deflation_drops_the_requirement_items_the_object_already_covers(fake_llm):
+def test_run_deflation_drops_the_requirement_items_the_object_already_covers():
     script = [REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3
-    plan = run(str(FIX / "sample.md"), fake_llm(list(script), fallback=TC), model="fake")
-    kept = run(str(FIX / "sample.md"), fake_llm(list(script), fallback=TC), model="fake", deflate=False)
+    plan = run(str(FIX / "sample.md"), BatchLLM(list(script), fallback=TC), model="fake")
+    kept = run(str(FIX / "sample.md"), BatchLLM(list(script), fallback=TC), model="fake", deflate=False)
     # REQ-5.4-1 names the nonce object of its own clause, which covers both its nominal and its negative check
     assert [i.check for i in plan.coverage_items if i.source_id == "REQ-5.4-1"] == ["capability"]
     assert [i.check for i in kept.coverage_items if i.source_id == "REQ-5.4-1"] == ["capability", "nominal", "negative"]

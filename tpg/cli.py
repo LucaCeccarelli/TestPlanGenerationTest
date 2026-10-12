@@ -1,5 +1,5 @@
 """tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2]
-[--no-model] [--no-grammar] [--no-deflate]"""
+[--no-model] [--no-grammar] [--no-deflate] [--no-batch]"""
 import argparse
 import sys
 
@@ -27,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--no-model", action="store_true", help="skip the test-model stage (sentence-level requirements only)")
     g.add_argument("--no-grammar", action="store_true", help="skip the grammar stage (no objects from formal declarations)")
     g.add_argument("--no-deflate", action="store_true", help="keep every coverage item: no generic groups, no overlap removal")
+    g.add_argument("--no-batch", action="store_true", help="generate one LLM call per coverage item instead of one per source")
     args = parser.parse_args(argv)
 
     if args.attempts < 1:
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         plan = run(args.standard, llm, args.model, clause_ids=clause_ids, attempts=args.attempts,
                    log=lambda s: print(s, file=sys.stderr), use_model=not args.no_model,
-                   use_grammar=not args.no_grammar, deflate=not args.no_deflate)
+                   use_grammar=not args.no_grammar, deflate=not args.no_deflate, batch=not args.no_batch)
     except ValueError as e:
         _err(str(e))
         return 1

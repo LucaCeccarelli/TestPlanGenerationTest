@@ -136,4 +136,17 @@ def test_no_grammar_and_no_deflate_flags_are_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
     monkeypatch.setattr(cli, "run", fake_run)
     cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-grammar", "--no-deflate"])
-    assert (seen["use_grammar"], seen["deflate"], seen["use_model"]) == (False, False, True)
+    assert (seen["use_grammar"], seen["deflate"], seen["use_model"], seen["batch"]) == (False, False, True, True)
+
+
+def test_no_batch_flag_is_passed(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_run(path, llm, model, **kw):
+        seen.update(kw)
+        return TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
+
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    monkeypatch.setattr(cli, "run", fake_run)
+    cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-batch"])
+    assert seen["batch"] is False

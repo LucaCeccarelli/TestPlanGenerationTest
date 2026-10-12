@@ -14,7 +14,7 @@ from tpg.models import Source, TestPlan
 
 
 def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempts: int = 3, log=lambda s: None,
-        use_model: bool = True, use_grammar: bool = True, deflate: bool = True) -> TestPlan:
+        use_model: bool = True, use_grammar: bool = True, deflate: bool = True, batch: bool = True) -> TestPlan:
     clauses = ingest(path)
     log(f"{len(clauses)} clauses")
     if clause_ids:
@@ -34,7 +34,7 @@ def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempt
     log(f"{len(ics)} ICS items")
     items = derive(reqs, objs, ics, deflate)
     log(f"{len(items)} coverage items")
-    cases, gen_gaps = generate(items, reqs, objs, clauses, llm, attempts, log)
+    cases, gen_gaps = generate(items, reqs, objs, clauses, llm, attempts, log, batch)
     with open(path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
     source = Source(path=path, sha256=digest, model=model, generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
