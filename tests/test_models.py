@@ -1,4 +1,4 @@
-from tpg.models import (CoverageItem, Gap, Requirement, RequirementBatch, Source, TestCase, TestObject,
+from tpg.models import (CoverageItem, Gap, ICSItem, Requirement, RequirementBatch, Source, TestCase, TestObject,
                         TestObjectBatch, TestPlan, TraceLink)
 
 
@@ -8,9 +8,14 @@ def test_testplan_round_trips_through_json():
         requirements=[Requirement(id="REQ-5.1-1", clause_id="5.1", text="The device shall respond.",
                                   modality="shall", conditions=[], source_quote="shall respond")],
         objects=[TestObject(id="OBJ-5.1-1", clause_id="5.1", name="nonce", kind="parameter", direction="received",
-                            presence="mandatory", type="text string", source_quote="Name: nonce | Presence: mandatory")],
+                            presence="mandatory", type="text string", source_quote="Name: nonce | Presence: mandatory",
+                            applies_when=["the device is in secure mode"])],
+        ics=[ICSItem(id="ICS-OBJ-5.1-1", source_id="OBJ-5.1-1", clause_id="5.1", feature="nonce", status="mandatory",
+                     condition=None, applies_when=["the device is in secure mode"])],
         coverage_items=[CoverageItem(id="CI-OBJ-5.1-1-presence", source_id="OBJ-5.1-1", clause_id="5.1",
-                                     check="presence", kind="nominal", purpose="Verify that nonce is present")],
+                                     check="presence", kind="nominal", group="valid_behaviour",
+                                     purpose="Verify that nonce is present",
+                                     applies_when=["the device is in secure mode"], generic_group="nonce")],
         test_cases=[TestCase(id="TC-CI-OBJ-5.1-1-presence", source_id="OBJ-5.1-1", coverage_item_id="CI-OBJ-5.1-1-presence",
                              kind="nominal", objective="o", steps=["s"], expected_result="r", pass_criteria="p")],
         traceability=[TraceLink(source_id="OBJ-5.1-1", coverage_item_ids=["CI-OBJ-5.1-1-presence"],
@@ -18,7 +23,9 @@ def test_testplan_round_trips_through_json():
         gaps=[Gap(source_id=None, clause_id="5.2", stage="model", reason="bad", attempts=3)],
     )
     assert TestPlan.model_validate_json(plan.model_dump_json()) == plan
-    assert list(plan.model_dump()) == ["source", "requirements", "objects", "coverage_items", "test_cases", "traceability", "gaps"]
+    assert list(plan.model_dump()) == ["source", "requirements", "objects", "ics", "coverage_items", "test_cases",
+                                       "traceability", "gaps"]
+    assert plan.objects[0].origin == "prose"
 
 
 def test_batch_schemas_are_json_schema_objects():
@@ -30,6 +37,26 @@ def test_object_draft_defaults():
     from tpg.models import TestObjectDraft
     o = TestObjectDraft(name="n", kind="field", source_quote="q")
     assert o.direction == "internal" and o.presence == "unspecified" and o.relations == [] and o.type is None
+    assert o.applies_when == []
+
+
+def test_applies_when_takes_the_same_lenient_list_coercion_as_the_other_list_fields():
+    from tpg.models import RequirementDraft, TestObjectDraft
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q", "applies_when": "profile X"})
+    assert o.applies_when == ["profile X"]
+    r = RequirementDraft.model_validate({"text": "t", "modality": "shall", "source_quote": "q", "applies_when": None})
+    assert r.applies_when == []
+    r2 = RequirementDraft.model_validate({"text": "t", "modality": "shall", "source_quote": "q",
+                                          "applies_when": ["a", 2, "  "]})
+    assert r2.applies_when == ["a", "2"]
+
+
+def test_origin_is_on_the_persisted_object_only_and_defaults_to_prose():
+    from tpg.models import TestObjectDraft
+    assert "origin" not in TestObjectDraft.model_fields
+    o = TestObject(id="OBJ-1-1", clause_id="1", name="n", kind="field", source_quote="q")
+    assert o.origin == "prose"
+    assert TestObject(id="OBJ-1-2", clause_id="1", name="n", kind="field", source_quote="q", origin="grammar").origin == "grammar"
 
 
 def test_requirement_batch_keeps_every_draft_when_one_modality_is_unknown():

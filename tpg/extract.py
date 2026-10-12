@@ -70,6 +70,7 @@ Rules:
 - "modality": one of shall, shall_not, should, should_not, may. Use "must" as shall, "must not" / "shall never" as shall_not,
   "should not" as should_not.
 - "conditions": the list of conditions under which the obligation applies (e.g. ["request is malformed", "session has expired"] for "if A or B then ..."); empty list if unconditional.
+- "applies_when": the conditions under which this obligation applies at all, quoted from the clause as written; empty list when it always applies.
 - "source_quote": a VERBATIM substring of the clause text that contains THIS requirement's own modal verb, not one belonging to a
   different obligation nearby. Keep it as short as possible while still containing that modal verb. If a bullet elaborates or
   restates a preceding obligation without a modal verb of its own, fold its detail into the "text" of the requirement whose
@@ -83,7 +84,8 @@ Rules:
 - If none of the candidate sentences states an obligation of the system under test (e.g. bibliography entries, definitions of the
   words shall/should/may, dates), return an empty list.
 {feedback}
-Reply with JSON only: {{"requirements": [{{"text": ..., "modality": ..., "conditions": [...], "source_quote": ...}}]}}"""
+Reply with JSON only: {{"requirements": [{{"text": ..., "modality": ..., "conditions": [...], "applies_when": [...],
+"source_quote": ...}}]}}"""
 
 
 def check_draft(clause: Clause, n: int, d: RequirementDraft) -> str | None:

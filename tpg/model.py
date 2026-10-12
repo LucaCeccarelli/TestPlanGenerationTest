@@ -36,11 +36,12 @@ Rules:
 - "value_domain": allowed values, format or pattern as written; null if not stated.
 - "size": length, range or count constraint with its numbers as written; null if not stated.
 - "relations": constraints tying this object to other objects (e.g. "same value as X", "unique within Y"); empty if none.
+- "applies_when": the conditions under which this element applies at all, quoted from the clause as written; empty list when it always applies.
 - "source_quote": a VERBATIM substring of the clause text that names the object (a table row line is valid text). Copy it exactly.
 - Do not invent attributes; leave them null or unspecified when the text does not state them.
 {feedback}
 Reply with JSON only: {{"objects": [{{"name": ..., "kind": ..., "direction": ..., "presence": ..., "condition": ..., "type": ...,
-"value_domain": ..., "size": ..., "relations": [...], "source_quote": ...}}]}}"""
+"value_domain": ..., "size": ..., "relations": [...], "applies_when": [...], "source_quote": ...}}]}}"""
 
 
 def check_object(clause: Clause, n: int, d: TestObjectDraft) -> str | None:

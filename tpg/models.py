@@ -21,8 +21,13 @@ Presence = Literal["mandatory", "optional", "conditional", "unspecified"]
 Kind = Literal["nominal", "negative", "boundary"]
 Check = Literal["presence", "absence", "encoding_valid", "encoding_invalid", "value_valid", "value_invalid",
                 "boundary_min", "boundary_max", "boundary_outside", "consistency", "condition_true", "condition_false",
-                "nominal", "negative", "boundary"]
+                "nominal", "negative", "boundary", "capability", "inopportune", "reference"]
 Stage = Literal["extract", "model", "generate"]
+Origin = Literal["prose", "grammar"]
+# An ICS entry's status is the same vocabulary as an object's presence (ITU-T X.291 clause 10.4)
+Status = Presence
+# The four test groups of ITU-T X.291 clause 10.2.2
+Group = Literal["capability", "valid_behaviour", "invalid_behaviour", "inopportune_behaviour"]
 
 MODALITY_VALUES = get_args(Modality)
 OBJECT_KIND_VALUES = get_args(ObjectKind)
@@ -159,6 +164,7 @@ class RequirementDraft(BaseModel):
     text: str
     modality: str = _vocabulary(MODALITY_VALUES)
     conditions: list[str] = Field(default_factory=list)
+    applies_when: list[str] = Field(default_factory=list)
     source_quote: str
 
     @field_validator("text", "source_quote", mode="before")
@@ -166,7 +172,7 @@ class RequirementDraft(BaseModel):
     def _text_fields(cls, v: Any) -> str:
         return as_str(v)
 
-    @field_validator("conditions", mode="before")
+    @field_validator("conditions", "applies_when", mode="before")
     @classmethod
     def _list_fields(cls, v: Any) -> list[str]:
         return as_text_list(v)
@@ -198,6 +204,7 @@ class TestObjectDraft(BaseModel):
     value_domain: str | None = None
     size: str | None = None
     relations: list[str] = Field(default_factory=list)
+    applies_when: list[str] = Field(default_factory=list)
     source_quote: str
 
     @field_validator("name", "source_quote", mode="before")
@@ -210,7 +217,7 @@ class TestObjectDraft(BaseModel):
     def _optional_text_fields(cls, v: Any) -> str | None:
         return as_text(v)
 
-    @field_validator("relations", mode="before")
+    @field_validator("relations", "applies_when", mode="before")
     @classmethod
     def _list_fields(cls, v: Any) -> list[str]:
         return as_text_list(v)
@@ -237,11 +244,23 @@ class TestObject(TestObjectDraft):
     kind: ObjectKind
     direction: Direction = "internal"
     presence: Presence = "unspecified"
+    origin: Origin = "prose"
 
 
 class TestObjectBatch(BaseModel):
     """LLM output schema for one clause chunk."""
     objects: list[TestObjectDraft]
+
+
+class ICSItem(BaseModel):
+    """One line of the Implementation Conformance Statement proforma: a feature and its status."""
+    id: str
+    source_id: str
+    clause_id: str
+    feature: str
+    status: Status
+    condition: str | None = None
+    applies_when: list[str] = Field(default_factory=list)
 
 
 class CoverageItem(BaseModel):
@@ -250,8 +269,11 @@ class CoverageItem(BaseModel):
     clause_id: str
     check: Check
     kind: Kind
+    group: Group
     purpose: str
     condition_assignment: dict[str, bool] | None = None
+    applies_when: list[str] = Field(default_factory=list)
+    generic_group: str | None = None
 
 
 class TestCaseDraft(BaseModel):
@@ -307,6 +329,7 @@ class TestPlan(BaseModel):
     source: Source
     requirements: list[Requirement]
     objects: list[TestObject] = Field(default_factory=list)
+    ics: list[ICSItem] = Field(default_factory=list)
     coverage_items: list[CoverageItem] = Field(default_factory=list)
     test_cases: list[TestCase]
     traceability: list[TraceLink]

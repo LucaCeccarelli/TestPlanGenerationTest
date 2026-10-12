@@ -80,6 +80,13 @@ def test_prompt_contains_clause_candidates_and_failures():
     assert "5.2" in p and "c1" in p and "c2" in p and "prev failure" in p
 
 
+def test_prompt_asks_for_applies_when():
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1"], [], [])
+    assert p.count("applies_when") == 2          # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "applies_when"'))
+    assert "quote" in rule.lower() and "empty" in rule
+
+
 def test_extract_clause_success_assigns_ids(fake_llm):
     reqs, gap = extract_clause(CLAUSE, fake_llm([GOOD]))
     assert gap is None

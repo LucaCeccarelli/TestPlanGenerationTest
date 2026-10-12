@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from tpg.derive import derive
 from tpg.emit import build_plan
 from tpg.extract import extract
+from tpg.ics import build_ics
 from tpg.generate import generate
 from tpg.ingest import ingest
 from tpg.model import extract_objects
@@ -23,10 +24,12 @@ def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempt
         clauses = [c for c in clauses if c.id in clause_ids]
     reqs, gaps = extract(clauses, llm, attempts, log)
     objs, model_gaps = extract_objects(clauses, llm, attempts, log) if use_model else ([], [])
-    items = derive(reqs, objs)
+    ics = build_ics(reqs, objs)
+    log(f"{len(ics)} ICS items")
+    items = derive(reqs, objs, ics)
     log(f"{len(items)} coverage items")
     cases, gen_gaps = generate(items, reqs, objs, clauses, llm, attempts, log)
     with open(path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
     source = Source(path=path, sha256=digest, model=model, generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    return build_plan(source, reqs, objs, items, cases, gaps + model_gaps + gen_gaps)
+    return build_plan(source, reqs, objs, ics, items, cases, gaps + model_gaps + gen_gaps)

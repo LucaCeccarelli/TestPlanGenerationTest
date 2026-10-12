@@ -1,5 +1,5 @@
 from tpg.llm import LLMError
-from tpg.model import check_object, extract_objects, extract_objects_clause, has_rows, merge_objects
+from tpg.model import build_model_prompt, check_object, extract_objects, extract_objects_clause, has_rows, merge_objects
 from tpg.models import Clause, TestObjectDraft
 
 CLAUSE = Clause(id="5.4", title="Request parameters",
@@ -14,6 +14,13 @@ LOCALE = {"name": "locale", "kind": "parameter", "direction": "received", "prese
 
 def test_has_rows():
     assert has_rows("Name: nonce | Presence: mandatory") and not has_rows("plain prose: with colon") and not has_rows("a | b")
+
+
+def test_prompt_asks_for_applies_when():
+    p = build_model_prompt(CLAUSE, CLAUSE.text, "1/1", [], [])
+    assert p.count("applies_when") == 2          # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "applies_when"'))
+    assert "quote" in rule.lower() and "empty" in rule
 
 
 def test_check_object_rules():

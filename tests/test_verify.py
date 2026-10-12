@@ -3,7 +3,7 @@ from tpg.verify import check_test_case, required_assignments
 
 
 def item(check="presence", kind="nominal"):
-    return CoverageItem(id="CI-x", source_id="OBJ-1", clause_id="1", check=check, kind=kind, purpose="p")
+    return CoverageItem(id="CI-x", source_id="OBJ-1", clause_id="1", check=check, kind=kind, group="valid_behaviour", purpose="p")
 
 
 def draft(steps=("Send a request",), expected="Response within 500 ms", pc="pc"):

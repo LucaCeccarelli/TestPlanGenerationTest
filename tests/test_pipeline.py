@@ -32,7 +32,9 @@ def test_run_end_to_end_with_fake(fake_llm):
     assert [r.id for r in plan.requirements] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
     assert [o.id for o in plan.objects] == ["OBJ-5.4-1"]
     checks = [i.check for i in plan.coverage_items if i.source_id == "OBJ-5.4-1"]
-    assert checks == ["presence", "absence", "encoding_valid", "encoding_invalid", "boundary_min", "boundary_max", "boundary_outside"]
+    assert checks == ["capability", "presence", "absence", "encoding_valid", "encoding_invalid", "boundary_min", "boundary_max",
+                      "boundary_outside"]
+    assert [i.id for i in plan.ics] == ["ICS-OBJ-5.4-1", "ICS-REQ-5.1-1", "ICS-REQ-5.1-2", "ICS-REQ-5.2-1", "ICS-REQ-5.4-1"]
     assert len(plan.test_cases) == len(plan.coverage_items) 
     # the sample table has two rows; the scripted model only returns the first, so the second is reported
     assert [(g.stage, g.clause_id) for g in plan.gaps] == [("model", "5.4")] and "1/2 rows" in plan.gaps[0].reason
@@ -51,7 +53,7 @@ def test_run_clause_filter(fake_llm):
     llm = fake_llm([REQ_52, {"objects": []}], fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", clause_ids=["5.2"])
     assert {r.clause_id for r in plan.requirements} == {"5.2"}
-    assert len(plan.coverage_items) == 3 and len(llm.prompts) == 2 + 3
+    assert len(plan.coverage_items) == 4 and len(llm.prompts) == 2 + 4
 
 
 def test_run_unknown_clause_filter_raises(fake_llm):
