@@ -229,3 +229,54 @@ def test_iso_741_chunks_under_limit():
     c = next(c for c in ingest(str(p)) if c.id == "7.4.1")
     parts = chunks(c.text)
     assert len(parts) == 4 and max(map(len, parts)) < 3000
+
+
+NAMED = {"requirements": [dict(GOOD["requirements"][0], name="request"),
+                          dict(GOOD["requirements"][1], name="log entry")]}
+
+
+def test_prompt_asks_for_the_subject_name():
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1"], [], [])
+    assert p.count('"name"') == 2             # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "name"'))
+    assert "noun phrase" in rule
+    assert p.index('"source_quote": a VERBATIM') < p.index('- "name"')   # existing rules keep their order
+
+
+def test_extract_clause_keeps_the_subject_name(fake_llm):
+    reqs, gap = extract_clause(CLAUSE, fake_llm([NAMED]))
+    assert gap is None and [r.name for r in reqs] == ["request", "log entry"]
+
+
+def test_extract_clause_without_a_name_keeps_the_requirement(fake_llm):
+    reqs, gap = extract_clause(CLAUSE, fake_llm([GOOD]))
+    assert gap is None and len(reqs) == 2 and [r.name for r in reqs] == ["", ""]
+
+
+def test_extract_clause_normalises_a_badly_typed_name(fake_llm):
+    batch = {"requirements": [dict(GOOD["requirements"][0], name=["request", "session"]),
+                              dict(GOOD["requirements"][1], name=42)]}
+    reqs, gap = extract_clause(CLAUSE, fake_llm([batch]))
+    assert gap is None and [r.name for r in reqs] == ["request", "42"]
+
+
+def test_a_name_absent_from_the_clause_does_not_break_grounding():
+    """The quote stays the only grounded field: a noun phrase need not appear contiguously in the text."""
+    d = RequirementDraft(text="The device may log the request.", modality="may",
+                         source_quote="The device may log it.", name="audit trail entry")
+    assert check_requirements(CLAUSE, [d]) == []
+    assert d.text == "The device may log the request."
+
+
+def test_the_subject_name_reaches_the_emitted_plan(fake_llm, tmp_path):
+    import json
+
+    from tpg.emit import build_plan, write_plan
+    from tpg.models import Source
+    reqs, _ = extract_clause(CLAUSE, fake_llm([NAMED]))
+    plan = build_plan(Source(path="s.md", sha256="0", generated_at="t", model="m"), reqs, [], [], [], [], [])
+    out = tmp_path / "plan.json"
+    write_plan(plan, str(out))
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert [r["name"] for r in written["requirements"]] == ["request", "log entry"]
+    assert written["requirements"][0]["text"].startswith("If the request is malformed")

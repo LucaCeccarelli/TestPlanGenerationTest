@@ -81,11 +81,13 @@ Rules:
   or may, and put the detail in "text".
 - Before replying, re-read every source_quote: it must literally contain the word shall, must, should or may that matches its
   "modality" ("not" or "never" right after it for shall_not and should_not). If one does not, requote it or drop that requirement.
+- "name": the data item, message, structure or component this requirement constrains, as a short noun phrase
+  copied from the requirement's own words; "" when it constrains nothing nameable.
 - If none of the candidate sentences states an obligation of the system under test (e.g. bibliography entries, definitions of the
   words shall/should/may, dates), return an empty list.
 {feedback}
 Reply with JSON only: {{"requirements": [{{"text": ..., "modality": ..., "conditions": [...], "applies_when": [...],
-"source_quote": ...}}]}}"""
+"source_quote": ..., "name": ...}}]}}"""
 
 
 def check_draft(clause: Clause, n: int, d: RequirementDraft) -> str | None:

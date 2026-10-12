@@ -147,6 +147,13 @@ def as_text_list(v: Any) -> list[str]:
     return [t for t in (as_str(i) for i in items) if t]
 
 
+def as_name(v: Any) -> str:
+    """One short noun phrase for a name field: a list of candidates collapses to its first non-empty
+    entry, a number to its digits, anything unusable to empty so the declared default stands."""
+    items = as_text_list(v)
+    return items[0] if items else ""
+
+
 class Clause(BaseModel):
     id: str
     title: str
@@ -166,11 +173,20 @@ class RequirementDraft(BaseModel):
     conditions: list[str] = Field(default_factory=list)
     applies_when: list[str] = Field(default_factory=list)
     source_quote: str
+    # The data item the requirement constrains, for a name-based match against an official suite. Appended
+    # last so the advertised schema keeps the field order the prompt was tuned on; defaults to empty,
+    # because a measurement aid must never cost a requirement.
+    name: str = ""
 
     @field_validator("text", "source_quote", mode="before")
     @classmethod
     def _text_fields(cls, v: Any) -> str:
         return as_str(v)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> str:
+        return as_name(v)
 
     @field_validator("conditions", "applies_when", mode="before")
     @classmethod

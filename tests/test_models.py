@@ -151,3 +151,30 @@ def test_structured_values_keep_their_content_as_json_and_flags_are_unset():
     o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q",
                                         "type": False, "size": 0, "value_domain": {}})
     assert o.type is None and o.size == "0" and o.value_domain == "{}"
+
+
+def test_requirement_name_defaults_to_empty_and_never_costs_the_requirement():
+    """D25 rule (b) already finds the object a requirement is about; `name` records it so a name-based
+    matcher can score requirement-derived items. It is a measurement aid: a missing or oddly typed
+    value must normalise, never reject the draft or its batch."""
+    from tpg.models import RequirementDraft
+    base = {"text": "t", "modality": "shall", "source_quote": "q"}
+    assert RequirementDraft(**base).name == ""
+    assert RequirementDraft.model_validate({**base, "name": None}).name == ""
+    assert RequirementDraft.model_validate({**base, "name": "  nonce  "}).name == "nonce"
+    assert RequirementDraft.model_validate({**base, "name": ["docType", "nonce"]}).name == "docType"
+    assert RequirementDraft.model_validate({**base, "name": 7}).name == "7"
+    assert RequirementDraft.model_validate({**base, "name": True}).name == ""
+    assert RequirementDraft.model_validate({**base, "name": []}).name == ""
+
+
+def test_requirement_batch_schema_advertises_the_name_field():
+    props = RequirementBatch.model_json_schema()["$defs"]["RequirementDraft"]["properties"]
+    assert props["name"]["type"] == "string"
+    assert list(props)[-1] == "name"          # appended, so the prompt's field order is unchanged
+
+
+def test_requirement_name_reaches_the_persisted_requirement():
+    r = Requirement(id="REQ-5.1-1", clause_id="5.1", text="The device shall respond.", modality="shall",
+                    source_quote="shall respond", name="response code")
+    assert r.model_dump()["name"] == "response code"
