@@ -15,4 +15,27 @@
 <h2>5.4 Request parameters</h2>
 <table><tr><th>Name</th><th>Presence</th><th>Type</th></tr><tr><td>nonce</td><td>mandatory</td><td>text string of 16 to 64 characters</td></tr><tr><td>locale</td><td>optional</td><td>BCP 47 language tag</td></tr></table>
 <p>The reader shall reject a request whose nonce is missing.</p>
+<h2>5.5 Formal declarations</h2>
+<p>The structures of the interface are declared in four notations.</p>
+<p>record = {</p>
+<p>  label: tstr .size (1..32),</p>
+<p>  ? count: uint,</p>
+<p>  mode: "fast" / "slow",</p>
+<p>}</p>
+<p>token = prefix 1*8ALPHA [ suffix ]</p>
+<p>prefix = "x" / "y"</p>
+<p>suffix = "-a" / "-b"</p>
+<p>{</p>
+<p>  "type": "object",</p>
+<p>  "required": ["key"],</p>
+<p>  "properties": {</p>
+<p>    "key": {"type": "string", "minLength": 4, "maxLength": 16},</p>
+<p>    "flag": {"type": "string", "enum": ["on", "off"]}</p>
+<p>  }</p>
+<p>}</p>
+<p>Entry ::= SEQUENCE {</p>
+<p>  name UTF8String (SIZE(1..64)),</p>
+<p>  state INTEGER { idle(0), busy(1) },</p>
+<p>  note UTF8String OPTIONAL</p>
+<p>}</p>
 </body></html>

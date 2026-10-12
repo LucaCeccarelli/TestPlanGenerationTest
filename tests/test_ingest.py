@@ -11,7 +11,7 @@ FIX = Path(__file__).parent / "fixtures"
 def test_sample_segments_into_known_clauses(name):
     clauses = ingest(str(FIX / name))
     ids = [c.id for c in clauses]
-    expected = ["1", "5.1", "5.2", "5.3", "5.4"]
+    expected = ["1", "5.1", "5.2", "5.3", "5.4", "5.5"]
     assert expected == [i for i in ids if i in set(expected)]
     c51 = next(c for c in clauses if c.id == "5.1")
     assert c51.title == "Response time"
@@ -19,6 +19,11 @@ def test_sample_segments_into_known_clauses(name):
     c52 = next(c for c in clauses if c.id == "5.2")
     assert "shall not process" in c52.text
     assert "Name: nonce | Presence: mandatory" in next(c for c in clauses if c.id == "5.4").text
+    # the formal declarations of 5.5 survive as plain lines in every format, which the grammar stage reads
+    c55 = next(c for c in clauses if c.id == "5.5")
+    for line in ("label: tstr .size (1..32),", "token = prefix 1*8ALPHA [ suffix ]",
+                 '"key": {"type": "string", "minLength": 4, "maxLength": 16},', "name UTF8String (SIZE(1..64)),"):
+        assert line in c55.text, f"{name}: {line!r} missing from clause 5.5"
 
 
 def test_html_ignores_script():

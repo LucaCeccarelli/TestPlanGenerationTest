@@ -5,15 +5,16 @@ from datetime import datetime, timezone
 from tpg.derive import derive
 from tpg.emit import build_plan
 from tpg.extract import extract
+from tpg.grammar import harvest
 from tpg.ics import build_ics
 from tpg.generate import generate
 from tpg.ingest import ingest
-from tpg.model import extract_objects
+from tpg.model import assemble, extract_objects
 from tpg.models import Source, TestPlan
 
 
 def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempts: int = 3, log=lambda s: None,
-        use_model: bool = True) -> TestPlan:
+        use_model: bool = True, use_grammar: bool = True) -> TestPlan:
     clauses = ingest(path)
     log(f"{len(clauses)} clauses")
     if clause_ids:
@@ -23,7 +24,12 @@ def run(path: str, llm, model: str, clause_ids: list[str] | None = None, attempt
             raise ValueError(f"unknown clause ids: {', '.join(missing)}")
         clauses = [c for c in clauses if c.id in clause_ids]
     reqs, gaps = extract(clauses, llm, attempts, log)
-    objs, model_gaps = extract_objects(clauses, llm, attempts, log) if use_model else ([], [])
+    grammar = {c.id: harvest(c) for c in clauses} if use_grammar else {}
+    log(f"{sum(len(d) for d in grammar.values())} objects from formal declarations")
+    if use_model:
+        objs, model_gaps = extract_objects(clauses, llm, attempts, log, grammar)
+    else:
+        objs, model_gaps = [o for c in clauses for o in assemble(c, grammar.get(c.id, []), [])], []
     ics = build_ics(reqs, objs)
     log(f"{len(ics)} ICS items")
     items = derive(reqs, objs, ics)

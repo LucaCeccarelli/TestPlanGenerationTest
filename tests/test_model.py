@@ -1,4 +1,5 @@
 from tpg.extract import chunks
+from tpg.grammar import harvest
 from tpg.llm import LLMError
 from tpg.model import build_model_prompt, check_object, extract_objects, extract_objects_clause, has_rows, merge_objects
 from tpg.models import Clause, TestObjectDraft
@@ -138,3 +139,35 @@ def test_extract_objects_clause_recovery_prompt_is_chunked(fake_llm):
     extract_objects_clause(clause, llm, attempts=1)
     main = len(chunks(clause.text))
     assert len(llm.prompts) == 2 * main and all(len(p) < 3000 + 4000 for p in llm.prompts)
+
+
+DECL = Clause(id="7", title="Declarations", text="record = {\nlabel: tstr,\n}")
+DECL_PROSE = Clause(id="7", title="Declarations", text=DECL.text + "\nThe label shall be unique within a record.")
+
+
+def test_grammar_drafts_are_kept_and_tagged_grammar(fake_llm):
+    llm = fake_llm([])          # no candidates and no rows: the LLM must not be called at all
+    objs, gap = extract_objects_clause(DECL, llm, grammar=harvest(DECL))
+    assert gap is None and llm.prompts == []
+    assert [(o.id, o.name, o.origin, o.type) for o in objs] == [("OBJ-7-1", "label", "grammar", "tstr")]
+
+
+def test_prose_fills_an_attribute_the_grammar_left_unset(fake_llm):
+    prose = {"name": "label", "kind": "field", "direction": "received", "presence": "mandatory",
+             "value_domain": "unique within a record", "source_quote": "label: tstr,"}
+    objs, gap = extract_objects_clause(DECL_PROSE, fake_llm([{"objects": [prose]}]), grammar=harvest(DECL_PROSE))
+    assert gap is None and len(objs) == 1
+    o = objs[0]
+    assert (o.origin, o.type, o.direction, o.value_domain) == ("grammar", "tstr", "received", "unique within a record")
+
+
+def test_grammar_names_reach_the_model_prompt(fake_llm):
+    llm = fake_llm([{"objects": []}])
+    extract_objects_clause(DECL_PROSE, llm, grammar=harvest(DECL_PROSE))
+    assert "already" in llm.prompts[0] and "- label" in llm.prompts[0]
+
+
+def test_extract_objects_includes_a_clause_that_only_declares_a_structure(fake_llm):
+    llm = fake_llm([])
+    objs, gaps = extract_objects([DECL], llm, grammar={"7": harvest(DECL)})
+    assert gaps == [] and llm.prompts == [] and [(o.name, o.origin) for o in objs] == [("label", "grammar")]

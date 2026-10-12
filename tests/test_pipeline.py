@@ -24,17 +24,25 @@ TC = {"objective": "o", "preconditions": [], "inputs": [], "steps": ["s"], "expe
       "pass_criteria": "error observed"}
 
 
+GRAMMAR_55 = ["label", "count", "mode", "token", "prefix", "suffix", "key", "flag", "name", "state", "note"]
+
+
 def test_run_end_to_end_with_fake(fake_llm):
-    # sample.md: clauses 1, 3, 5, 5.1, 5.2, 5.3, 5.4; candidates in 5.1, 5.2, 5.4; rows only in 5.4.
+    # sample.md: clauses 1, 3, 5, 5.1, 5.2, 5.3, 5.4, 5.5; candidates in 5.1, 5.2, 5.4; rows only in 5.4;
+    # formal declarations only in 5.5, which therefore costs no model-stage call.
     llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
     lines = []
     plan = run(str(FIX / "sample.md"), llm, model="fake", log=lines.append)
     assert [r.id for r in plan.requirements] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
-    assert [o.id for o in plan.objects] == ["OBJ-5.4-1"]
+    assert [o.id for o in plan.objects] == ["OBJ-5.4-1"] + [f"OBJ-5.5-{n}" for n in range(1, 12)]
+    assert [o.name for o in plan.objects if o.clause_id == "5.5"] == GRAMMAR_55
+    assert {(o.clause_id, o.origin) for o in plan.objects} == {("5.4", "prose"), ("5.5", "grammar")}
     checks = [i.check for i in plan.coverage_items if i.source_id == "OBJ-5.4-1"]
     assert checks == ["capability", "presence", "absence", "encoding_valid", "encoding_invalid", "boundary_min", "boundary_max",
                       "boundary_outside"]
-    assert [i.id for i in plan.ics] == ["ICS-OBJ-5.4-1", "ICS-REQ-5.1-1", "ICS-REQ-5.1-2", "ICS-REQ-5.2-1", "ICS-REQ-5.4-1"]
+    # OBJ-5.5-4 is the ABNF rule no other rule references: its presence is unspecified, so it is no ICS feature
+    assert [i.id for i in plan.ics] == (["ICS-OBJ-5.4-1"] + [f"ICS-OBJ-5.5-{n}" for n in range(1, 12) if n != 4]
+                                        + ["ICS-REQ-5.1-1", "ICS-REQ-5.1-2", "ICS-REQ-5.2-1", "ICS-REQ-5.4-1"])
     assert len(plan.test_cases) == len(plan.coverage_items)
     # the sample table has two rows; the scripted model only returns the first, so the second is reported
     assert [(g.stage, g.clause_id) for g in plan.gaps] == [("model", "5.4")] and "1/2 rows" in plan.gaps[0].reason
@@ -43,10 +51,24 @@ def test_run_end_to_end_with_fake(fake_llm):
     assert any("coverage items" in l for l in lines)
 
 
-def test_run_without_model_stage(fake_llm):
+def test_run_without_model_or_grammar_stage(fake_llm):
+    llm = fake_llm([REQ_51, REQ_52, REQ_54], fallback=TC)
+    plan = run(str(FIX / "sample.md"), llm, model="fake", use_model=False, use_grammar=False)
+    assert plan.objects == [] and all(i.source_id.startswith("REQ-") for i in plan.coverage_items)
+
+
+def test_run_with_grammar_but_no_model_stage(fake_llm):
+    """The grammar stage is deterministic: without the model stage it still yields its objects."""
     llm = fake_llm([REQ_51, REQ_52, REQ_54], fallback=TC)
     plan = run(str(FIX / "sample.md"), llm, model="fake", use_model=False)
-    assert plan.objects == [] and all(i.source_id.startswith("REQ-") for i in plan.coverage_items)
+    assert [o.name for o in plan.objects] == GRAMMAR_55
+    assert {o.origin for o in plan.objects} == {"grammar"} and plan.gaps == []
+
+
+def test_run_without_grammar_stage_keeps_the_model_objects(fake_llm):
+    llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
+    plan = run(str(FIX / "sample.md"), llm, model="fake", use_grammar=False)
+    assert [o.id for o in plan.objects] == ["OBJ-5.4-1"] and plan.objects[0].origin == "prose"
 
 
 def test_run_clause_filter(fake_llm):

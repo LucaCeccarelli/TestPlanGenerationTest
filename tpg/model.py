@@ -14,8 +14,10 @@ def build_model_prompt(clause: Clause, chunk: str, part: str, failures: list[str
     if failures:
         feedback = ("\nSome objects of your previous answer were rejected for these reasons; return ONLY corrected versions of "
                     "those rejected objects, nothing else:\n" + "\n".join(f"- {f}" for f in failures) + "\n")
-        if accepted_names:
-            feedback += "Already accepted, do not repeat: " + ", ".join(accepted_names) + "\n"
+    if accepted_names:
+        # objects the grammar stage read out of a formal declaration, or an earlier reply already gave
+        feedback += ("\nThese objects of this clause have already been collected; do NOT return them again:\n"
+                     + "\n".join(f"- {n}" for n in accepted_names) + "\n")
     return f"""You build a test model from one clause of a technical specification: the list of OBJECTS the clause defines or
 constrains, each with the attributes the text states. Objects are data elements or fields, structures, messages, parameters,
 distinguished values, or behaviours. The system under test is the party that must conform (infer it from the clause).
@@ -126,8 +128,22 @@ def _recover_rows(clause: Clause, llm, accepted: list[TestObjectDraft], attempts
     return [f"{len(rows) - len(missing)}/{clause.row_count} rows returned"] + failures
 
 
-def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[TestObject], Gap | None]:
+def assemble(clause: Clause, grammar: list[TestObjectDraft], prose: list[TestObjectDraft]) -> list[TestObject]:
+    """One clause's objects: the grammar drafts first, so a same-named prose draft only fills what the
+    declaration left unset, then numbered in the order their quotes appear in the clause."""
+    from_grammar = {id(d) for d in grammar}
+    merged = merge_objects(grammar + prose)
+    body = norm(clause.text)
+    ordered = sorted(merged, key=lambda d: body.index(norm(d.source_quote)))
+    return [TestObject(id=f"OBJ-{clause.id}-{n}", clause_id=clause.id,
+                       origin="grammar" if id(d) in from_grammar else "prose", **d.model_dump())
+            for n, d in enumerate(ordered, 1)]
+
+
+def extract_objects_clause(clause: Clause, llm, attempts: int = 3,
+                           grammar: list[TestObjectDraft] | tuple = ()) -> tuple[list[TestObject], Gap | None]:
     accepted: list[TestObjectDraft] = []
+    known = [d.name for d in grammar]
     open_failures: list[str] = []
     parts = chunks(clause.text)
     for i, chunk in enumerate(parts, 1):
@@ -135,7 +151,7 @@ def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list
             continue
         failures: list[str] = []
         for _ in range(attempts):
-            prompt = build_model_prompt(clause, chunk, f"{i}/{len(parts)}", failures, [a.name for a in accepted])
+            prompt = build_model_prompt(clause, chunk, f"{i}/{len(parts)}", failures, known + [a.name for a in accepted])
             try:
                 batch = llm.complete(prompt, TestObjectBatch)
             except LLMError as e:
@@ -149,23 +165,22 @@ def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list
                 break
         open_failures.extend(failures)
     open_failures.extend(_recover_rows(clause, llm, accepted, attempts))
-    merged = merge_objects(accepted)
-    body = norm(clause.text)
-    ordered = sorted(merged, key=lambda d: body.index(norm(d.source_quote)))
-    objs = [TestObject(id=f"OBJ-{clause.id}-{n}", clause_id=clause.id, **d.model_dump()) for n, d in enumerate(ordered, 1)]
+    objs = assemble(clause, list(grammar), accepted)
     gap = None
     if open_failures:
         gap = Gap(source_id=None, clause_id=clause.id, stage="model", reason="; ".join(open_failures), attempts=attempts)
     return objs, gap
 
 
-def extract_objects(clauses: list[Clause], llm, attempts: int = 3, log=lambda s: None) -> tuple[list[TestObject], list[Gap]]:
+def extract_objects(clauses: list[Clause], llm, attempts: int = 3, log=lambda s: None,
+                    grammar: dict[str, list[TestObjectDraft]] | None = None) -> tuple[list[TestObject], list[Gap]]:
     objs: list[TestObject] = []
     gaps: list[Gap] = []
     for clause in clauses:
-        if not (find_candidates(clause.text) or has_rows(clause.text)):
+        drafts = (grammar or {}).get(clause.id, [])
+        if not (find_candidates(clause.text) or has_rows(clause.text) or drafts):
             continue
-        got, gap = extract_objects_clause(clause, llm, attempts)
+        got, gap = extract_objects_clause(clause, llm, attempts, drafts)
         objs.extend(got)
         if gap:
             gaps.append(gap)
