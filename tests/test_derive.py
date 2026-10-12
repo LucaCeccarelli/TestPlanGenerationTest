@@ -4,7 +4,7 @@ import pytest
 
 from tpg.derive import GROUP, derive, derive_object, derive_requirement, group_for
 from tpg.ics import build_ics
-from tpg.models import Check, Kind, Requirement, TestObject
+from tpg.models import Check, Direction, Kind, Requirement, TestObject
 
 
 def req(**kw):
@@ -44,7 +44,7 @@ def test_conditional_requirement_items_carry_assignments():
 
 def test_object_presence_rules():
     assert checks(derive_object(obj(presence="mandatory", direction="received"))) == [("presence", "nominal"), ("absence", "negative")]
-    assert checks(derive_object(obj(presence="mandatory", direction="produced"))) == [("presence", "nominal")]
+    assert checks(derive_object(obj(presence="mandatory", direction="produced"))) == [("presence", "nominal"), ("absence", "negative")]
     assert checks(derive_object(obj(presence="optional"))) == [("presence", "nominal"), ("absence", "nominal")]
     assert checks(derive_object(obj(presence="conditional", condition="the request asks for it"))) == [("condition_true", "nominal"), ("condition_false", "negative")]
     assert checks(derive_object(obj())) == []
@@ -80,15 +80,65 @@ def test_capability_purpose_of_a_prohibition_is_not_phrased_as_support():
     assert caps["REQ-5.1-2"] == "Verify that the implementation supports The device shall respond."
 
 
-def test_produced_objects_get_no_invalid_stimuli():
-    o = obj(presence="mandatory", direction="produced", type="text", value_domain="x", size="1 to 2")
-    assert all(k != "negative" for _, k in checks(derive_object(o)))
+# --- D30 invalid-side items for every direction ---
+
+def rich(direction):
+    return obj(presence="mandatory", direction=direction, type="text string", value_domain="one of a, b",
+               size="16 to 64 characters")
+
+
+INVALID = [("absence", "negative"), ("encoding_invalid", "negative"), ("value_invalid", "negative"),
+           ("boundary_outside", "negative")]
+
+
+@pytest.mark.parametrize("direction", get_args(Direction))
+def test_invalid_side_items_are_emitted_whatever_the_direction(direction):
+    """D30: direction selects the wording of a negative item, never its existence. A grammar-derived object
+    has no stated direction, so a gate on `received` would drop the whole invalid half of its ladder."""
+    items = derive_object(rich(direction))
+    assert [c for c in checks(items) if c in INVALID] == INVALID
+    assert all(i.group == "invalid_behaviour" for i in items if (i.check, i.kind) in INVALID)
+
+
+def test_direction_changes_only_the_purpose_of_an_invalid_item():
+    by_direction = {d: derive_object(rich(d)) for d in get_args(Direction)}
+    skeleton = {d: [(i.id, i.check, i.kind, i.group) for i in items] for d, items in by_direction.items()}
+    assert skeleton["received"] == skeleton["produced"] == skeleton["internal"]
+    negatives = {d: [i.purpose for i in items if i.kind == "negative"] for d, items in by_direction.items()}
+    assert negatives["produced"] == negatives["internal"]
+    assert negatives["received"] != negatives["produced"]
+
+
+def test_received_invalid_purposes_ask_for_the_instance_to_be_supplied_and_rejected():
+    purposes = {i.check: i.purpose for i in derive_object(rich("received")) if i.kind == "negative"}
+    assert purposes == {
+        "absence": "Verify the reaction of the system under test when nonce is absent",
+        "encoding_invalid": "Verify the reaction of the system under test when nonce is not a well-formed text string",
+        "value_invalid": "Verify the reaction of the system under test when the value of nonce violates: one of a, b",
+        "boundary_outside": "Verify the reaction of the system under test when nonce is outside: 16 to 64 characters"}
+
+
+def test_produced_and_internal_invalid_purposes_ask_that_no_such_instance_is_ever_made():
+    for direction in ("produced", "internal"):
+        purposes = {i.check: i.purpose for i in derive_object(rich(direction)) if i.kind == "negative"}
+        assert purposes == {
+            "absence": "Verify that the system under test never produces or holds a case in which nonce is absent",
+            "encoding_invalid": "Verify that the system under test never produces or holds a case in which nonce is not a well-formed text string",
+            "value_invalid": "Verify that the system under test never produces or holds a case in which the value of nonce violates: one of a, b",
+            "boundary_outside": "Verify that the system under test never produces or holds a case in which nonce is outside: 16 to 64 characters"}, direction
+
+
+def test_an_unstated_presence_still_suppresses_both_absence_items():
+    """D30 emits `absence` of a mandatory element. With no stated presence there is no obligation to
+    violate and no permission to exercise, so neither the negative nor the nominal item is derived."""
+    assert [c for c, _ in checks(derive_object(obj(presence="unspecified", type="text string")))] == [
+        "encoding_valid", "encoding_invalid"]
 
 
 def test_derive_orders_capability_then_requirements_then_objects():
     reqs, objs = [req()], [obj(presence="mandatory")]
     items = derive(reqs, objs, build_ics(reqs, objs))
-    assert [i.source_id for i in items] == ["OBJ-5.4-1", "REQ-5.1-1"] + ["REQ-5.1-1"] * 3 + ["OBJ-5.4-1"]
+    assert [i.source_id for i in items] == ["OBJ-5.4-1", "REQ-5.1-1"] + ["REQ-5.1-1"] * 3 + ["OBJ-5.4-1"] * 2
     assert [i.check for i in items][:2] == ["capability", "capability"]
     assert all(i.clause_id in ("5.1", "5.4") for i in items)
 

@@ -88,10 +88,16 @@ def derive_object(obj: TestObject) -> list[CoverageItem]:
     def add(check, kind, purpose, n=None):
         items.append(_item(obj.id, obj.clause_id, check, kind, purpose, n, applies_when=obj.applies_when))
 
+    def add_invalid(check, violation):
+        """D30: `direction` selects the wording of a negative item, never its existence. A received object
+        must reject an invalid instance supplied to it; a produced or internal one must never make one
+        (ISO/IEC/IEEE 29119-4 clause 5.2.4 syntax testing holds for a decoder and an encoder alike)."""
+        add(check, "negative", f"Verify the reaction of the system under test when {violation}" if received
+            else f"Verify that the system under test never produces or holds a case in which {violation}")
+
     if obj.presence == "mandatory":
         add("presence", "nominal", f"Verify that {obj.name} is present {d}")
-        if received:
-            add("absence", "negative", f"Verify the reaction of the system under test when {obj.name} is absent")
+        add_invalid("absence", f"{obj.name} is absent")
     elif obj.presence == "optional":
         add("presence", "nominal", f"Verify that {obj.name} is accepted when present {d}")
         add("absence", "nominal", f"Verify that {obj.name} may be absent {d}")
@@ -100,17 +106,14 @@ def derive_object(obj: TestObject) -> list[CoverageItem]:
         add("condition_false", "negative", f"Verify the handling of {obj.name} when the condition does not hold: {obj.condition}")
     if obj.type:
         add("encoding_valid", "nominal", f"Verify that {obj.name} is a well-formed {obj.type} {d}")
-        if received:
-            add("encoding_invalid", "negative", f"Verify the reaction of the system under test when {obj.name} is not a well-formed {obj.type}")
+        add_invalid("encoding_invalid", f"{obj.name} is not a well-formed {obj.type}")
     if obj.value_domain:
         add("value_valid", "nominal", f"Verify that the value of {obj.name} satisfies: {obj.value_domain}")
-        if received:
-            add("value_invalid", "negative", f"Verify the reaction of the system under test when the value of {obj.name} violates: {obj.value_domain}")
+        add_invalid("value_invalid", f"the value of {obj.name} violates: {obj.value_domain}")
     if obj.size and any(c.isdigit() for c in obj.size):      # an occurrence marker such as "*" states no limit
         add("boundary_min", "boundary", f"Verify {obj.name} at the minimum of: {obj.size}")
         add("boundary_max", "boundary", f"Verify {obj.name} at the maximum of: {obj.size}")
-        if received:
-            add("boundary_outside", "negative", f"Verify the reaction of the system under test when {obj.name} is outside: {obj.size}")
+        add_invalid("boundary_outside", f"{obj.name} is outside: {obj.size}")
     for n, rel in enumerate(obj.relations, 1):
         add("consistency", "nominal", f"Verify that {obj.name} satisfies: {rel}", n)
     return items
