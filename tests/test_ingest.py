@@ -465,13 +465,11 @@ def test_general_punctuation_quotes_and_dashes_are_all_covered(tmp_path):
         assert cp not in TYPOGRAPHIC, unicodedata.name(chr(cp))
 
 
-@pytest.mark.xfail(strict=True, reason="tpg.extract.norm does not share this normalisation; "
-                                       "see .superpowers/sdd/2026-10-12-conformance-methodology/task-14-report.md")
 def test_a_quote_written_with_a_curly_quote_still_grounds(tmp_path):
     """The grounding check compares normalised forms (tpg.extract.norm), and an LLM quoting a clause
     may write the quotation mark the way a publisher would. Normalising the clause text here without
     normalising the quote there turns a verbatim quote into an ungrounded one. The two normalisations
-    have to agree; `norm` lives outside this file and cannot be changed from here."""
+    have to agree, and since 83d78bf they do: `norm` shares ingest's TYPOGRAPHIC mapping."""
     from tpg.extract import norm
     md = tmp_path / "q.md"
     md.write_text("## 5.1 Codes\nThe \u201ctoken\u201d attribute identifies the mDL.\n", encoding="utf-8")

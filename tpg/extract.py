@@ -2,6 +2,7 @@
 draft; valid drafts are kept and only invalid ones are retried."""
 import re
 
+from tpg.ingest import TYPOGRAPHIC
 from tpg.llm import LLMError
 from tpg.models import (MODALITY_VALUES, Clause, Gap, Requirement, RequirementBatch,
                         RequirementDraft)
@@ -19,7 +20,13 @@ CHUNK_LIMIT = 3000
 
 
 def norm(s: str) -> str:
-    return " ".join(s.split()).lower()
+    """Normalise for the verbatim-grounding comparison.
+
+    This has to agree with what ingest stores, or a genuinely verbatim quote reads as ungrounded.
+    Ingest maps typographic punctuation to its ASCII equivalent, so a model quoting a clause with
+    the curly quotation mark a publisher typeset would otherwise fail to match.
+    """
+    return " ".join(s.translate(TYPOGRAPHIC).split()).lower()
 
 
 def find_candidates(text: str) -> list[str]:
