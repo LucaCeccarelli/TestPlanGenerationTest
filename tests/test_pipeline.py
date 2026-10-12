@@ -1,12 +1,14 @@
 import hashlib
+import json
 import re
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import FakeLLM
-from tpg.models import CoverageItem, ICSItem, TestCaseBatch
-from tpg.pipeline import ics_coverage, ics_coverage_line, run
+from tpg.models import CoverageItem, ICSItem, TestCaseBatch, TestCaseDraft
+from tpg.pipeline import (JOURNAL_SUFFIX, PARTIAL_SUFFIX, clear_partial, ics_coverage, ics_coverage_line,
+                          run)
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -168,3 +170,90 @@ def test_every_mandatory_or_optional_ics_item_reaches_a_coverage_item():
     plan = run(str(FIX / "sample.md"), llm, model="fake")
     cov, due = ics_coverage(plan.ics, plan.coverage_items)
     assert due and cov == due, [i.id for i in plan.ics if i.source_id not in {c.source_id for c in plan.coverage_items}]
+
+
+# --- survivability of a long run: what reaches disk, and when (I1) ---------------------------------
+
+SCRIPT_54 = [REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3
+# the prose-quoted object of clause 5.4, the one deflation rule (b) has something to say about
+SCRIPT_PROSE = [REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54_PROSE] + [{"objects": []}] * 3
+
+
+class DyingLLM(BatchLLM):
+    """Scripted through the deterministic stages, then dies in generation the way an out-of-memory
+    kill or a dropped connection to the model dies: not an LLMError, so nothing retries it."""
+
+    def __init__(self, *a, dies=MemoryError, after=0, **k):
+        super().__init__(*a, **k)
+        self.dies, self.after, self.gen_calls = dies, after, 0
+
+    def complete(self, prompt, schema):
+        if schema in (TestCaseBatch, TestCaseDraft):
+            self.gen_calls += 1
+            if self.gen_calls > self.after:
+                raise self.dies("the model went away")
+        return super().complete(prompt, schema)
+
+
+def _journal(path):
+    return [json.loads(l) for l in Path(path).read_text().splitlines()]
+
+
+def test_run_persists_the_stages_before_generation(tmp_path):
+    """An exception in generation leaves ingest, extract, grammar, model, ICS and derive on disk: the
+    cheap stages cost a minute to recompute, but they are the whole plan apart from its cases."""
+    out = tmp_path / "plan.json"
+    with pytest.raises(MemoryError):
+        run(str(FIX / "sample.md"), DyingLLM(list(SCRIPT_54), fallback=TC), model="fake", out=str(out))
+    assert not out.exists(), "the probe must not leave an empty plan behind"
+    partial = json.loads((tmp_path / ("plan.json" + PARTIAL_SUFFIX)).read_text())
+    assert [r["id"] for r in partial["requirements"]] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
+    assert partial["objects"] and partial["ics"] and partial["coverage_items"]
+    assert partial["test_cases"] == [] and partial["traceability"]
+    assert partial["source"]["sha256"] == hashlib.sha256((FIX / "sample.md").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("batch", [True, False])
+def test_run_journals_the_cases_an_interrupt_did_not_reach(tmp_path, batch):
+    """A Ctrl-C at hour six keeps every case already answered, which is the only expensive stage."""
+    out = tmp_path / "plan.json"
+    llm = DyingLLM(list(SCRIPT_54), fallback=TC, dies=KeyboardInterrupt, after=2)
+    with pytest.raises(KeyboardInterrupt):
+        run(str(FIX / "sample.md"), llm, model="fake", out=str(out), batch=batch)
+    records = _journal(tmp_path / ("plan.json" + JOURNAL_SUFFIX))
+    cases = [r["test_case"] for r in records if "test_case" in r]
+    assert cases, records
+    items = {i["id"] for i in json.loads((tmp_path / ("plan.json" + PARTIAL_SUFFIX)).read_text())["coverage_items"]}
+    assert {c["coverage_item_id"] for c in cases} <= items
+
+
+@pytest.mark.parametrize("batch", [True, False])
+def test_persistence_changes_neither_the_plan_nor_the_model_calls(tmp_path, batch):
+    """The artefact and the prompts are what they are without `out`; persistence is additional."""
+    bare, kept = BatchLLM(list(SCRIPT_54), fallback=TC), BatchLLM(list(SCRIPT_54), fallback=TC)
+    a = run(str(FIX / "sample.md"), bare, model="fake", batch=batch)
+    b = run(str(FIX / "sample.md"), kept, model="fake", batch=batch, out=str(tmp_path / "plan.json"))
+    for p in (a, b):
+        p.source.generated_at = "t"
+    assert a.model_dump(mode="json") == b.model_dump(mode="json")
+    assert bare.prompts == kept.prompts
+    # every case of a finished run is in the journal too, so a plan lost at the last second is rebuildable
+    cases = [r["test_case"] for r in _journal(tmp_path / ("plan.json" + JOURNAL_SUFFIX)) if "test_case" in r]
+    assert [c["id"] for c in cases] == [c.id for c in b.test_cases]
+
+
+def test_clear_partial_removes_both_sidecars(tmp_path):
+    out = tmp_path / "plan.json"
+    run(str(FIX / "sample.md"), BatchLLM(list(SCRIPT_54), fallback=TC), model="fake", out=str(out))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plan.json" + JOURNAL_SUFFIX, "plan.json" + PARTIAL_SUFFIX]
+    clear_partial(str(out))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_run_reports_a_deflation_removal_through_its_own_log():
+    """Rule (b) deletes test purposes, so its report belongs in the run's log beside every other
+    stage's counts, not on a stderr stream the caller may not be capturing."""
+    lines = []
+    run(str(FIX / "sample.md"), BatchLLM(list(SCRIPT_PROSE), fallback=TC), model="fake", log=lines.append)
+    assert [l for l in lines if l.startswith("deflation rule (b): dropped CI-REQ-5.4-1")]
+    assert [l for l in lines if "coverage items dropped as duplicates" in l]

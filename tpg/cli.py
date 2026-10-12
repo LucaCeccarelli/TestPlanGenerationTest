@@ -2,10 +2,11 @@
 [--no-model] [--no-grammar] [--no-deflate] [--no-batch]"""
 import argparse
 import sys
+from pathlib import Path
 
 from tpg.emit import write_plan
 from tpg.llm import LLMError, OllamaLLM, load_dotenv
-from tpg.pipeline import ics_coverage_line, run
+from tpg.pipeline import clear_partial, ics_coverage_line, run
 
 DEFAULT_MODEL = "gemma4:31b"
 
@@ -41,6 +42,20 @@ def main(argv: list[str] | None = None) -> int:
         _err(f"cannot read {args.standard}: {e.strerror or e}")
         return 1
 
+    # The run is hours long and writes beside --out as it goes, so the path is proved writable now
+    # rather than after the last model call. A missing parent directory is refused and not created:
+    # a mistyped path that is silently created puts the result where nobody will look for it, while
+    # refusing costs one mkdir and a re-run that has not yet spent anything.
+    try:
+        existed = Path(args.out).exists()
+        with open(args.out, "a"):
+            pass
+        if not existed:
+            Path(args.out).unlink()
+    except OSError as e:
+        _err(f"cannot write {args.out}: {e.strerror or e}")
+        return 1
+
     load_dotenv()
     llm = OllamaLLM(model=args.model)
     try:
@@ -52,7 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         plan = run(args.standard, llm, args.model, clause_ids=clause_ids, attempts=args.attempts,
                    log=lambda s: print(s, file=sys.stderr), use_model=not args.no_model,
-                   use_grammar=not args.no_grammar, deflate=not args.no_deflate, batch=not args.no_batch)
+                   use_grammar=not args.no_grammar, deflate=not args.no_deflate, batch=not args.no_batch,
+                   out=args.out)
     except ValueError as e:
         _err(str(e))
         return 1
@@ -61,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         _err(f"cannot write {args.out}: {e.strerror or e}")
         return 1
+    clear_partial(args.out)
     _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.objects)} objects, {len(plan.ics)} ICS items, "
          f"{len(plan.coverage_items)} coverage items, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps, "
          f"{ics_coverage_line(plan.ics, plan.coverage_items)}")

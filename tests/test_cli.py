@@ -105,13 +105,39 @@ def test_exit_1_when_attempts_below_one(tmp_path, monkeypatch, capsys):
     assert "attempts" in capsys.readouterr().err
 
 
-def test_exit_1_when_output_unwritable(tmp_path, monkeypatch, capsys):
-    plan = TestPlan(source=SRC, requirements=[], test_cases=[], traceability=[], gaps=[])
-    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
-    monkeypatch.setattr(cli, "run", _stub_run(plan))
-    out = tmp_path / "no_such_dir" / "p.json"
+def _unwritable_dir(tmp_path):
+    d = tmp_path / "ro"
+    d.mkdir()
+    d.chmod(0o500)
+    return d
+
+
+@pytest.mark.parametrize("kind", ["missing_dir", "unwritable_dir"])
+def test_exit_1_before_any_model_call_when_output_unwritable(tmp_path, monkeypatch, capsys, kind):
+    """The six-hour failure mode: the whole run discarded by `cannot write` at the very end. The path
+    is probed before the model is even reached, so the same message arrives in the first second."""
+    reached = []
+    monkeypatch.setattr(cli, "OllamaLLM", type("Counting", (StubLLM,), {"check": lambda self: reached.append("check")}))
+    monkeypatch.setattr(cli, "run", lambda *a, **kw: reached.append("run"))
+    if kind == "missing_dir":
+        out = tmp_path / "no_such_dir" / "p.json"
+    else:
+        d = _unwritable_dir(tmp_path)
+        if os.access(d, os.W_OK):
+            pytest.skip("running as root; cannot make a directory unwritable")
+        out = d / "p.json"
     assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(out)]) == 1
-    assert "cannot write" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "cannot write" in err and str(out) in err
+    assert reached == []
+
+
+def test_the_output_probe_leaves_no_empty_plan_behind(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "OllamaLLM", StubLLM)
+    monkeypatch.setattr(cli, "run", lambda *a, **kw: (_ for _ in ()).throw(ValueError("unknown clause ids: 9.9")))
+    out = tmp_path / "p.json"
+    assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(out), "--clauses", "9.9"]) == 1
+    assert not out.exists() and list(tmp_path.iterdir()) == []
 
 
 def test_no_model_flag_is_passed(tmp_path, monkeypatch):
@@ -164,7 +190,7 @@ def _real_run(tmp_path, monkeypatch, *flags):
     llm = BatchLLM(list(SCRIPT), fallback=TC)
     monkeypatch.setattr(cli, "OllamaLLM", lambda model: llm)
     monkeypatch.setattr(llm, "check", lambda: None, raising=False)
-    out = tmp_path / f"plan{len(flags)}{''.join(flags)}.json".replace("-", "")
+    out = tmp_path / "plan.json"
     cli.main(["generate", str(FIX / "sample.md"), "--out", str(out), *flags])
     plan = json.loads(out.read_text())
     return {k: len(plan[k]) for k in ("requirements", "objects", "ics", "coverage_items", "test_cases")} | {"calls": len(llm.prompts)}
@@ -194,3 +220,22 @@ def test_summary_line_reports_every_count(tmp_path, monkeypatch, capsys):
                     (base["coverage_items"], "coverage items"), (base["test_cases"], "test cases")]:
         assert f"{n} {word}" in err, (word, err)
     assert "gaps" in err and "ICS coverage 100.0%" in err
+
+
+def test_a_successful_run_leaves_only_the_plan(tmp_path, monkeypatch):
+    """The sidecars of an interrupted run are dropped once the plan itself is on disk, so a finished
+    run looks exactly as it looks today."""
+    _real_run(tmp_path, monkeypatch)
+    assert [p.name for p in tmp_path.iterdir()] == ["plan.json"]
+
+
+def test_the_sidecars_survive_a_plan_that_cannot_be_serialised(tmp_path, monkeypatch, capsys):
+    """write_plan is the last thing that can fail; when it does, the work stays recoverable."""
+    monkeypatch.setattr(cli, "write_plan", lambda *a, **kw: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+    llm = BatchLLM(list(SCRIPT), fallback=TC)
+    monkeypatch.setattr(cli, "OllamaLLM", lambda model: llm)
+    monkeypatch.setattr(llm, "check", lambda: None, raising=False)
+    out = tmp_path / "plan.json"
+    assert cli.main(["generate", str(FIX / "sample.md"), "--out", str(out)]) == 1
+    assert "No space left on device" in capsys.readouterr().err
+    assert {p.name for p in tmp_path.iterdir()} == {"plan.json.partial.json", "plan.json.cases.jsonl"}
