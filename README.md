@@ -40,17 +40,24 @@ requirement's modality (shall and shall not are mandatory, should, should not an
 The coverage rule follows ISO/IEC 9646-2 (ITU-T X.291) clause 10.3.5, "at least one test purpose
 related to each distinct conformance requirement", in the form ETSI's test purpose style guide
 states it: any mandatory or optional item of the ICS is covered by at least one test purpose. The
-derive stage satisfies it by construction, emitting one `capability` coverage item per mandatory or
-optional ICS item, and every run audits itself against it: the pipeline log and the CLI summary both
-end in `ICS coverage P% (covered/due)`, over the mandatory and optional items only.
+derive stage satisfies it **by construction**, emitting one `capability` coverage item per mandatory
+or optional ICS item, and neither deflation rule can remove one. The pipeline log and the CLI summary
+end in `ICS coverage P% (covered/due)` over the mandatory and optional items.
 
-**ICS coverage is the headline metric, and it needs no official test suite.** Matching a generated
-plan against a published suite is possible only for the few standards that have one, it measures the
-other suite's editorial choices as much as this one's reach, and the figures the literature reports
-under that kind of matching are low. The ICS criterion is computed from the input document alone, so
-it transfers unchanged to any standard, including the large majority that no official suite covers.
-It is a necessary condition, not a sufficient one: it says every declared feature is addressed, not
-that the cases addressing it are good.
+**That percentage is a guarantee, not a score.** Because derive emits the item, the figure is
+100 per cent in every run and in every combination of the four flags (measured: 278/278 on OpenID4VP
+in all 16 combinations, 75/75 on the deterministic path over the ISO fixture), and it cannot be
+otherwise unless derive is broken. It is printed as a soundness invariant on the derive stage and
+should be read as one: a run reporting less has a defect, and a run reporting 100 per cent has proved
+nothing about the quality of its suite.
+
+**The informative figure is the denominator: the number of ICS items.** That count is a claim about
+how many testable features the tool found in the document, it needs no official test suite, and it is
+what compares across runs and across standards. Matching a generated plan against a published suite
+is possible only for the few standards that have one, it measures the other suite's editorial choices
+as much as this one's reach, and the figures the literature reports under that kind of matching are
+low. Beside the count, the share of due ICS items whose every coverage item did produce a test case
+is a real measurement: it depends on the model and can fail.
 
 ### Four test groups
 
@@ -159,9 +166,11 @@ RFCs: feed the `.txt` or `.html` from the RFC Editor; the PDF rendering loses se
   must, should, may. Documents using other-language equivalents will under-segment or under-extract.
 - A zero-gap run is an optimistic signal, not a proof: a retry that answers with an unrelated but
   valid draft can close an open failure without actually fixing it.
-- ICS coverage is a necessary condition, not a sufficient one, and it is computed over the features
-  the tool itself read out of the document: a feature the ingest or the extract stage never saw is
-  absent from the denominator as well as from the suite.
+- The ICS coverage percentage cannot fail: derive emits the covering item, so it is an invariant and
+  never a quality measure. Its denominator, the ICS item count, is the figure that carries
+  information, and it is computed over the features the tool itself read out of the document: a
+  feature the ingest or the extract stage never saw is absent from the denominator as well as from
+  the suite, so the count is a lower bound on what the standard declares.
 - Batching groups coverage items by their source, so the call reduction depends on how many items a
   source has. Measured on the coverage item distribution of a full run over a 265-clause standard,
   1320 of 1611 sources carried only one or two items, so the batch of eight is rarely full and the

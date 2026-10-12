@@ -9,9 +9,13 @@ not in the input at all -- a different edition, or a clause the ingest never seg
 counts are printed and the score is stated against the third, which is the only honest in-edition test
 available without a semantic crosswalk between editions.
 
-*ICS coverage is the headline.* The share of mandatory and optional Implementation Conformance
-Statement items that got a coverage item, and the share whose items all produced a test case, need no
-official suite at all, so they are the figures that transfer to a standard that has none.
+*The ICS item count, not ICS coverage.* The share of mandatory and optional Implementation Conformance
+Statement items that got a coverage item is not a measurement: the derive stage emits one `capability`
+item per due ICS item by construction, so the share is 100 per cent in every run and every flag
+combination, and anything less is a defect in derive rather than a worse suite. It is printed as the
+invariant it is. The figure that carries information is the **denominator** -- how many testable
+features were read out of the document -- together with the share of due items whose every coverage
+item did produce a test case, which depends on the model and can fail.
 
 *Macro beside micro.* A per-case rate lets the single most-cited clause and the largest test family
 dominate. The mean of the per-clause rates and the mean of the per-family rates do not.
@@ -25,7 +29,7 @@ import re
 import subprocess
 import sys
 
-from match_structural import CHECK_TYPES
+from match_structural import CHECK_TYPES, population
 
 EVAL = pathlib.Path("eval")
 # A suite numbers the cases of one family in sequence ("mDL_MS_DE_Gen_05"), so dropping the trailing
@@ -91,8 +95,10 @@ def plan_section(plan) -> None:
 
 
 def ics_section(plan) -> None:
-    """The suite-independent headline: how much of the conformance statement the plan actually tests."""
-    print("\n== ICS coverage (the suite-independent headline)")
+    """The ICS proforma: its size, which is the informative figure, and the derive invariant, which is
+    not a score. `with a coverage item` is 100 per cent by construction (one `capability` item per due
+    item); `every item tested` depends on the model and can fail."""
+    print("\n== ICS proforma: the item count is the figure, the coverage share is an invariant")
     ics = plan.get("ics") or []
     if not ics:
         print("the plan carries no ICS proforma, so this metric is not computable for it")
@@ -105,6 +111,8 @@ def ics_section(plan) -> None:
     for entry in ics:
         items = by_source.get(entry["source_id"], [])
         rows.append((entry, bool(items), bool(items) and all(i["id"] in tested for i in items)))
+    print(f"ICS items read out of the document: {len(ics)}   <- the informative figure:"
+          " how many testable features were found, comparable across runs and across standards")
     print("ICS items by status:", dict(collections.Counter(e["status"] for e in ics)))
     for status in ("mandatory and optional", "mandatory", "optional"):
         want = ("mandatory", "optional") if status == "mandatory and optional" else (status,)
@@ -114,11 +122,15 @@ def ics_section(plan) -> None:
         with_item = sum(1 for r in scope if r[1])
         all_tested = sum(1 for r in scope if r[2])
         print(f"{status:24s} {len(scope):4d} items |"
-              f" with a coverage item {with_item:4d} = {100 * with_item / len(scope):5.1f}% |"
-              f" every item tested {all_tested:4d} = {100 * all_tested / len(scope):5.1f}%")
+              f" with a coverage item {with_item:4d} = {100 * with_item / len(scope):5.1f}% (invariant) |"
+              f" every item tested {all_tested:4d} = {100 * all_tested / len(scope):5.1f}% (measured)")
+    print("`with a coverage item` is 100.0% by construction -- derive emits one capability item per due"
+          " ICS item -- so it is a soundness check on derive, not a quality measure, and a figure below"
+          " 100.0% is a derive defect. Only `every item tested` and the item count above say anything"
+          " about the run.")
     naked = [e["id"] for e, has, _ in rows if not has and e["status"] in ("mandatory", "optional")]
     if naked:
-        print("untested mandatory/optional ICS items (first 10):", naked[:10])
+        print("due ICS items with no coverage item, which should be impossible (first 10):", naked[:10])
 
 
 def denominator_section(ground_truth, clause_ids) -> tuple[list, list, list]:
@@ -148,12 +160,16 @@ def denominator_section(ground_truth, clause_ids) -> tuple[list, list, list]:
     return ground_truth, cited, in_edition
 
 
-def verdicts(judge, matches) -> tuple[dict, dict]:
-    """gt_id -> covered, for the judge (errors dropped) and for the structural matcher."""
+def verdicts(judge, matches) -> tuple[dict, dict, dict]:
+    """gt_id -> covered, for the judge (errors dropped) and for the structural matcher, the latter
+    twice: over every named source, and over the named objects alone, which is the figure comparable
+    with a run whose requirements carried no name."""
     j = {r["gt_id"]: bool(r["covered"]) for r in (judge or []) if r.get("covered") is not None}
-    m = {r["gt_id"]: bool(r["matched"]) for r in (matches or [])
-         if r.get("data_item") and r.get("check_type")}
-    return j, m
+    scorable = [r for r in (matches or []) if r.get("data_item") and r.get("check_type")]
+    m = {r["gt_id"]: bool(r["matched"]) for r in scorable}
+    m_obj = {r["gt_id"]: bool(r["matched_object_sourced"]) for r in scorable
+             if "matched_object_sourced" in r}
+    return j, m, m_obj
 
 
 def rates(cases, covered) -> str:
@@ -173,17 +189,25 @@ def rates(cases, covered) -> str:
             f" | macro over {len(by_family):3d} families {100 * mean(mean(v) for v in by_family.values()):5.1f}%")
 
 
-def coverage_section(scopes, judge, matches) -> None:
+def coverage_section(scopes, judge, matches, plan=None) -> None:
     print("\n== coverage of the official suite: structural matcher beside the LLM judge")
-    j, m = verdicts(judge, matches)
+    j, m, m_obj = verdicts(judge, matches)
     if not j:
         print("no LLM judge results (eval/judge_results.json missing or every verdict errored)")
     if not m:
         print("no structural match results (eval/match_results.json missing)")
+    if matches and plan:
+        population(plan, matches)
     for label, cases in scopes:
         print(f"\n  {label}  (n={len(cases)})")
-        print("    structural (no model)")
+        print("    structural (no model), every named source")
         print(rates(cases, m))
+        if m_obj:
+            print("    structural, named objects only (comparable with a run whose requirements"
+                  " carried no name)")
+            print(rates(cases, m_obj))
+        elif matches:
+            print("    structural, named objects only: not recorded in this match_results.json")
         print("    LLM judge (same model family as the generator: a self-preference risk)")
         print(rates(cases, j))
     if j and m:
@@ -234,7 +258,7 @@ def main() -> None:
         ics_section(plan)
     else:
         print("\n== plan: eval/plan.json missing")
-        print("\n== ICS coverage: eval/plan.json missing")
+        print("\n== ICS proforma: eval/plan.json missing")
 
     ground_truth = load("ground_truth.json")
     judge = load("judge_results.json")
@@ -244,7 +268,7 @@ def main() -> None:
         scopes = list(zip(("all official cases", "citing a clause of the standard under test",
                            "in-edition: cited id present in the input (the scored denominator)"),
                           denominator_section(ground_truth, clause_ids)))
-        coverage_section([(l, c) for l, c in scopes if c], judge, matches)
+        coverage_section([(l, c) for l, c in scopes if c], judge, matches, plan)
     else:
         print("\n== denominators: eval/ground_truth.json missing")
         print("\n== coverage: eval/ground_truth.json missing, so no denominator can be stated")
