@@ -346,11 +346,12 @@ ingest  ->  grammar (deterministic objects from declarations)
 - **Target restated honestly:** 85 to 90 per cent is attainable on ICS and requirement coverage, and
   is not attainable on strict per-case matching, where the realistic band is 35 to 60 per cent.
 
-### 6.4 What building it changed: four amendments forced by measurement
+### 6.4 What building it changed: five findings forced by measurement
 
 Each stage was probed on the real 126-page fixture as it was built, which is how the following were
-found. They are the honest part of the story: a design that looked complete on paper lost most of
-its reach to four defects that only a count could reveal.
+found. They are the honest part of the story: a design that looked complete on paper lost reach to
+defects only a count could reveal, and one of the defects we went looking for turned out not to
+exist.
 
 **The invalid half of the ladder was unreachable (amended as D30).** The specification gated the
 negative coverage items on an object's `direction` being `received`. Measured on the fixture, that
@@ -372,14 +373,33 @@ of 94 objects as a bracket; the merge collapsed same-named members of different 
 into the type field of 35 of 94. Four defects, none of which a unit test on a well-formed block would
 have shown.
 
-**Ingest caps the whole pipeline, and did so silently.** The rebuilt harness measured which clause
-ids are ever segmented: 265 for the entire standard. Among the clauses that official tests cite but
-that ingest never produces are `8.3.2.1.2.2`, cited by 88 official cases, `9.1.1.4` by 64, and
-`8.3.2.1.2.3` by 32. Deeply nested headings, five and six numbering levels deep, were not
-recognised. A clause that is never segmented yields no requirement, no object and no test case, so
-roughly a quarter of the usable ground truth was out of reach before any LLM ran. This reframes the
-earlier diagnosis: the bottleneck we attributed to extraction and granularity was in part a reading
-defect two stages earlier.
+**A suspected ingest ceiling turned out to be an edition difference, and finding that out mattered
+more than a fix would have.** The harness measured that only 265 clause ids are ever segmented from
+the whole standard, and that cited clauses carrying 184 official test cases were never among them:
+`8.3.2.1.2.2` with 88 cases, `9.1.1.4` with 64, `8.3.2.1.2.3` with 32. The obvious reading was that
+deeply nested headings were not being recognised, which would have capped coverage before any LLM
+ran. It was wrong. An independent oracle, the document's own bold-text styling, cross-checked against
+all 1516 bold lines, finds exactly 265 numbered headings, and ingest already produced exactly those
+265, six numbering levels included. None of the three cited ids exists anywhere in the input, not
+even as a cross-reference; their draft equivalents `8.2.1.1.2.2`, `9.2.1.4` and `8.2.1.1.2.3` were
+all being read correctly all along. The input is the 2020 draft and the official suite cites the 2021
+published edition, so this is the **edition mismatch asserting itself inside what looked like a
+parser defect**. The methodological point is the one worth publishing: a coverage denominator built
+from clause citations silently mixes a reading failure with an edition difference, and only an oracle
+independent of the parser can separate them.
+
+The same investigation did find a real defect, on a different document: a heading written as a number
+and a lowercase title on one line was rejected, costing the OpenID4VP specification 24 clause ids,
+including its entire IANA registry annex. 180 to 194. That it showed up on the second document and
+not the first is the argument for keeping more than one specification in the test set.
+
+**One of the three input formats is unreadable, which bounds the generality claim.** RFC 8949 yields
+zero headings, and not because of segmentation: the PDF embeds its text in an `Identity-H` font
+subset with no `ToUnicode` mapping, so the extractor decodes none of it. `get_text()` returns zero
+occurrences of `Abstract`, `Introduction` or `MUST` across the whole document. A tool that claims to
+accept any technical specification has to be honest that it currently accepts any specification whose
+PDF carries a recoverable character map, and that this is a property of the file rather than of the
+standard.
 
 **Deflation is real but not free.** The generic-group rule alone removes 16.2 per cent of coverage
 items on the fixture, 321 to 269, with 18 reference items over 8 groups, before any requirement
@@ -404,8 +424,9 @@ the structural matcher is not merely a looser judge. A 20-case hand audit of the
 gets the check type right 15 times and the data item right 10 times plus 3 correct nulls, and every
 error mode observed produces a false negative, so 22.5 per cent is a lower bound. Two honest limits:
 the matcher needs a source object, and requirement-derived items carry no name, so 1575 of 3257
-coverage items cannot be scored by it at all; and because ingest segments only 265 clauses, the
-in-edition denominator of 250 is a floor measured on the wrong 250.
+coverage items cannot be scored by it at all; and the in-edition denominator of 250 is a floor,
+because an id present in the 2021 edition and renumbered in the 2020 draft counts as absent for want
+of a semantic crosswalk between the editions.
 
 **Three denominators, stated rather than chosen silently.** 907 official cases in all; 687 citing a
 clause of the standard under test; 250 whose cited clause id actually exists in the input edition.
