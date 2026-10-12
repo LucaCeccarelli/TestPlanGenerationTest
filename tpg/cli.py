@@ -5,7 +5,7 @@ import sys
 
 from tpg.emit import write_plan
 from tpg.llm import LLMError, OllamaLLM, load_dotenv
-from tpg.pipeline import run
+from tpg.pipeline import ics_coverage_line, run
 
 DEFAULT_MODEL = "gemma4:31b"
 
@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         _err(f"cannot write {args.out}: {e.strerror or e}")
         return 1
-    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.objects)} objects, {len(plan.coverage_items)} coverage items, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps")
+    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.objects)} objects, {len(plan.ics)} ICS items, "
+         f"{len(plan.coverage_items)} coverage items, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps, "
+         f"{ics_coverage_line(plan.ics, plan.coverage_items)}")
     return 2 if plan.gaps else 0
 
 

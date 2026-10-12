@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import tpg.cli as cli
+from tests.test_pipeline import OBJ_54_PROSE, REQ_51, REQ_52, REQ_54, TC, BatchLLM
 from tpg.llm import LLMError
 from tpg.models import Gap, Requirement, Source, TestPlan
 
@@ -150,3 +151,46 @@ def test_no_batch_flag_is_passed(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "run", fake_run)
     cli.main(["generate", str(FIX / "sample.md"), "--out", str(tmp_path / "p.json"), "--no-batch"])
     assert seen["batch"] is False
+
+
+# the object is the prose-quoted variant, so deflation rule (b) has something to remove and
+# --no-deflate is observable on this document
+SCRIPT = [REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54_PROSE] + [{"objects": []}] * 3
+
+
+def _real_run(tmp_path, monkeypatch, *flags):
+    """cli.main over the real pipeline with the scripted fake, so a flag that never reaches its stage
+    shows up as an unchanged plan. Returns the plan's counts plus the number of model calls."""
+    llm = BatchLLM(list(SCRIPT), fallback=TC)
+    monkeypatch.setattr(cli, "OllamaLLM", lambda model: llm)
+    monkeypatch.setattr(llm, "check", lambda: None, raising=False)
+    out = tmp_path / f"plan{len(flags)}{''.join(flags)}.json".replace("-", "")
+    cli.main(["generate", str(FIX / "sample.md"), "--out", str(out), *flags])
+    plan = json.loads(out.read_text())
+    return {k: len(plan[k]) for k in ("requirements", "objects", "ics", "coverage_items", "test_cases")} | {"calls": len(llm.prompts)}
+
+
+# --no-batch leaves the plan identical by design (Task 5 proved the two paths agree), so its effect is
+# the call count; the other three change the plan itself.
+FLAG_EFFECT = {
+    "--no-model": lambda base, got: got["objects"] < base["objects"],
+    "--no-grammar": lambda base, got: got["objects"] < base["objects"],
+    "--no-deflate": lambda base, got: got["coverage_items"] > base["coverage_items"],
+    "--no-batch": lambda base, got: got["calls"] > base["calls"],
+}
+
+
+@pytest.mark.parametrize("flag", list(FLAG_EFFECT))
+def test_each_flag_changes_the_run(tmp_path, monkeypatch, flag):
+    base = _real_run(tmp_path, monkeypatch)
+    got = _real_run(tmp_path, monkeypatch, flag)
+    assert FLAG_EFFECT[flag](base, got), (flag, base, got)
+
+
+def test_summary_line_reports_every_count(tmp_path, monkeypatch, capsys):
+    base = _real_run(tmp_path, monkeypatch)
+    err = capsys.readouterr().err.splitlines()[-1]
+    for n, word in [(base["requirements"], "requirements"), (base["objects"], "objects"), (base["ics"], "ICS items"),
+                    (base["coverage_items"], "coverage items"), (base["test_cases"], "test cases")]:
+        assert f"{n} {word}" in err, (word, err)
+    assert "gaps" in err and "ICS coverage 100.0%" in err

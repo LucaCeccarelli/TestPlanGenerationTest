@@ -7,7 +7,7 @@ import pytest
 from tpg.extract import norm
 from tpg.ingest import ingest
 from tpg.llm import OllamaLLM, load_dotenv
-from tpg.pipeline import run
+from tpg.pipeline import ics_coverage, run
 
 FIX = Path(__file__).parent / "fixtures"
 MODEL = os.environ.get("TPG_MODEL", "gemma4:31b")
@@ -34,10 +34,32 @@ def _assert_plan_is_sound(plan, path):
         assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
     for o in plan.objects:
         assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
-    # D21: every feature the ICS declares mandatory or optional is covered by at least one item
+    # D21: every feature the ICS declares mandatory or optional is covered by at least one item, which
+    # is the X.291 clause 10.4 criterion and the headline metric, so the run must reach 100 per cent
+    covered_sources = {c.source_id for c in plan.coverage_items}
     for i in plan.ics:
         if i.status in ("mandatory", "optional"):
-            assert any(c.source_id == i.source_id for c in plan.coverage_items), i.id
+            assert i.source_id in covered_sources, i.id
+    assert ics_coverage(plan.ics, plan.coverage_items)[0] == len([i for i in plan.ics if i.status in ("mandatory", "optional")])
+    # D23: every coverage item belongs to one of the four X.291 clause 10.2.2 test groups
+    for c in plan.coverage_items:
+        assert c.group in ("capability", "valid_behaviour", "invalid_behaviour", "inopportune_behaviour"), (c.id, c.group)
+    # D25: a reference item stands in for a generic test suite, so it exists only where the object's own
+    # name recurs in another clause. Asserted on the object's name rather than on the group key, which
+    # D31 widened to the attributes that determine the group's purposes.
+    objs = {o.id: o for o in plan.objects}
+    clauses_by_name = {}
+    for o in plan.objects:
+        clauses_by_name.setdefault(norm(o.name), set()).add(o.clause_id)
+    for c in plan.coverage_items:
+        if c.check == "reference":
+            assert c.generic_group, c.id
+            assert c.source_id in objs, c.id
+            assert len(clauses_by_name[norm(objs[c.source_id].name)]) > 1, (c.id, objs[c.source_id].name)
+    # D22: applicability is verbatim text, always a list of strings, on every source and every item
+    for src in [*plan.requirements, *plan.objects, *plan.ics, *plan.coverage_items]:
+        assert isinstance(src.applies_when, list), src.id
+        assert all(isinstance(a, str) for a in src.applies_when), (src.id, src.applies_when)
     covered = {t.coverage_item_id for t in plan.test_cases}
     for i in plan.coverage_items:
         assert i.id in covered, i.id
