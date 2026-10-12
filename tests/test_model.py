@@ -1,3 +1,4 @@
+from tpg.extract import chunks
 from tpg.llm import LLMError
 from tpg.model import build_model_prompt, check_object, extract_objects, extract_objects_clause, has_rows, merge_objects
 from tpg.models import Clause, TestObjectDraft
@@ -114,3 +115,26 @@ def test_extract_objects_clause_no_gap_when_rows_recovered(fake_llm):
     llm = fake_llm([{"objects": [_row_obj(0)]}, {"objects": [_row_obj(i) for i in range(1, 5)]}])
     objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
     assert len(objs) == 5 and gap is None and len(llm.prompts) == 2
+
+
+def test_extract_objects_clause_duplicate_quotes_do_not_hide_uncovered_row(fake_llm):
+    dup = {**_row_obj(0), "name": "p0 again"}
+    llm = fake_llm([{"objects": [_row_obj(0), dup, _row_obj(1)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 3 and gap is not None and "2/5 rows" in gap.reason
+
+
+def test_extract_objects_clause_recovery_failures_reach_gap_reason(fake_llm):
+    bad = {**_row_obj(2), "source_quote": "nowhere"}
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}, {"objects": [bad]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert "2/5 rows" in gap.reason and "nowhere" in gap.reason
+
+
+def test_extract_objects_clause_recovery_prompt_is_chunked(fake_llm):
+    rows = [f"Name: p{i} | Presence: optional | Note: " + "x" * 400 for i in range(20)]
+    clause = Clause(id="9", title="Rows", text="\n".join(rows), row_count=20)
+    llm = fake_llm([], fallback={"objects": []})
+    extract_objects_clause(clause, llm, attempts=1)
+    main = len(chunks(clause.text))
+    assert len(llm.prompts) == 2 * main and all(len(p) < 3000 + 4000 for p in llm.prompts)

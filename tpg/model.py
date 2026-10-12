@@ -106,18 +106,24 @@ def _recover_rows(clause: Clause, llm, accepted: list[TestObjectDraft], attempts
     if not clause.row_count:
         return []
     rows = [ln for ln in clause.text.splitlines() if " | " in ln]
+    failures: list[str] = []
     for _ in range(attempts):
         quotes = [norm(a.source_quote) for a in accepted]
         missing = [r for r in rows if not any(norm(r) in q or q in norm(r) for q in quotes)]
         if not missing:
-            break
-        prompt = build_model_prompt(clause, "\n".join(missing), "missing rows: return objects only for these rows", [], [a.name for a in accepted])
-        try:
-            _accept(clause, llm.complete(prompt, TestObjectBatch).objects, accepted)
-        except LLMError:
-            pass
-    got = sum(" | " in a.source_quote for a in accepted)
-    return [f"{got}/{clause.row_count} rows returned"] if got < clause.row_count else []
+            return []
+        for piece in chunks("\n".join(missing)):
+            prompt = build_model_prompt(clause, piece, "missing rows: return objects only for these rows", [], [a.name for a in accepted])
+            try:
+                new = _accept(clause, llm.complete(prompt, TestObjectBatch).objects, accepted)
+            except LLMError as e:
+                new = [str(e)]
+            failures += [f for f in new if f not in failures]
+    quotes = [norm(a.source_quote) for a in accepted]
+    missing = [r for r in rows if not any(norm(r) in q or q in norm(r) for q in quotes)]
+    if not missing:
+        return []
+    return [f"{len(rows) - len(missing)}/{clause.row_count} rows returned"] + failures
 
 
 def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[TestObject], Gap | None]:

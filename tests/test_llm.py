@@ -4,7 +4,7 @@ import os
 import pytest
 from pydantic import BaseModel
 
-from tpg.llm import LLMError, OllamaLLM, clean_json, load_dotenv, salvage_json_array
+from tpg.llm import LLMError, OllamaLLM, clean_json, TruncatedJSON, load_dotenv, salvage_json_array
 from tpg.models import TestObjectBatch
 
 NONCE_OBJ = {"name": "n", "kind": "field", "direction": "received", "presence": "mandatory", "source_quote": "q"}
@@ -134,3 +134,18 @@ def test_complete_still_raises_when_nothing_salvageable(monkeypatch):
     monkeypatch.setattr(llm, "_chat", lambda p, s: '{"objects": [{"name": "x')
     with pytest.raises(LLMError):
         llm.complete("p", TestObjectBatch)
+
+
+def test_complete_does_not_salvage_mismatched_brackets(monkeypatch):
+    llm = OllamaLLM(model="m", host="http://x")
+    monkeypatch.setattr(llm, "_chat", lambda p, s: '{"objects": [' + json.dumps(NONCE_OBJ) + ', }')
+    with pytest.raises(LLMError, match="unbalanced"):
+        llm.complete("p", TestObjectBatch)
+
+
+def test_clean_json_unterminated_is_truncated_json():
+    with pytest.raises(TruncatedJSON):
+        clean_json('{"objects": [{"a":')
+    with pytest.raises(LLMError) as e:
+        clean_json('[}')
+    assert not isinstance(e.value, TruncatedJSON)

@@ -13,6 +13,10 @@ class LLMError(Exception):
     pass
 
 
+class TruncatedJSON(LLMError):
+    pass
+
+
 def load_dotenv(path: str = ".env") -> None:
     p = Path(path)
     if not p.exists():
@@ -52,7 +56,7 @@ def clean_json(text: str) -> str:
                 raise LLMError("unbalanced JSON in reply")
             if not stack:
                 return text[start : i + 1]
-    raise LLMError("unterminated JSON in reply")
+    raise TruncatedJSON("unterminated JSON in reply")
 
 
 def salvage_json_array(text: str, key: str) -> str | None:
@@ -122,7 +126,7 @@ class OllamaLLM:
         try:
             try:
                 cleaned = clean_json(raw)
-            except LLMError:
+            except TruncatedJSON:
                 lists = [n for n, f in schema.model_fields.items() if get_origin(f.annotation) is list]
                 cleaned = salvage_json_array(raw, lists[0]) if len(lists) == 1 else None
                 if cleaned is None:

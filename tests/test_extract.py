@@ -171,7 +171,7 @@ def test_extract_clause_chunks_long_clause(fake_llm):
     long = Clause(id="9", title="t", text="\n".join(f"Item {i}: the unit shall do thing {i}." for i in range(400)))
     llm = fake_llm([{"requirements": []}] * 10)
     reqs, gap = extract_clause(long, llm)
-    assert gap is None and reqs == [] and len(llm.prompts) == len(chunks(long.text)) >= 2
+    assert gap is None and reqs == [] and len(llm.prompts) == 6
     assert "part 1/" in llm.prompts[0]
 
 

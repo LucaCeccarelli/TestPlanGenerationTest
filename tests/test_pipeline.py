@@ -35,7 +35,7 @@ def test_run_end_to_end_with_fake(fake_llm):
     assert checks == ["capability", "presence", "absence", "encoding_valid", "encoding_invalid", "boundary_min", "boundary_max",
                       "boundary_outside"]
     assert [i.id for i in plan.ics] == ["ICS-OBJ-5.4-1", "ICS-REQ-5.1-1", "ICS-REQ-5.1-2", "ICS-REQ-5.2-1", "ICS-REQ-5.4-1"]
-    assert len(plan.test_cases) == len(plan.coverage_items) 
+    assert len(plan.test_cases) == len(plan.coverage_items)
     # the sample table has two rows; the scripted model only returns the first, so the second is reported
     assert [(g.stage, g.clause_id) for g in plan.gaps] == [("model", "5.4")] and "1/2 rows" in plan.gaps[0].reason
     assert {t.coverage_item_id for t in plan.test_cases} == {i.id for i in plan.coverage_items}
