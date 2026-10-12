@@ -80,3 +80,30 @@ def test_extract_objects_clause_survives_one_unrecognised_enum(fake_llm):
     objs, gap = extract_objects_clause(CLAUSE, llm)
     assert [o.name for o in objs] == ["nonce"]
     assert gap is not None and "gadget" in gap.reason and len(llm.prompts) == 3
+
+
+ROWS = [f"Name: p{i} | Presence: optional" for i in range(5)]
+ROW_CLAUSE = Clause(id="9", title="Rows", text="\n".join(ROWS), row_count=5)
+
+
+def _row_obj(i):
+    return {"name": f"p{i}", "kind": "parameter", "direction": "received", "presence": "optional", "source_quote": ROWS[i]}
+
+
+def test_extract_objects_clause_reprompts_for_missing_rows(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}, {"objects": [_row_obj(2)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 3 and gap is not None and gap.stage == "model" and "3/5 rows" in gap.reason
+    assert ROWS[2] in llm.prompts[1] and ROWS[0] not in llm.prompts[1] and len(llm.prompts) == 4
+
+
+def test_extract_objects_clause_missing_rows_gap_counts(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 2 and "2/5 rows" in gap.reason
+
+
+def test_extract_objects_clause_no_gap_when_rows_recovered(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0)]}, {"objects": [_row_obj(i) for i in range(1, 5)]}])
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 5 and gap is None and len(llm.prompts) == 2

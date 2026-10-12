@@ -26,14 +26,16 @@ TC = {"objective": "o", "preconditions": [], "inputs": [], "steps": ["s"], "expe
 
 def test_run_end_to_end_with_fake(fake_llm):
     # sample.md: clauses 1, 3, 5, 5.1, 5.2, 5.3, 5.4; candidates in 5.1, 5.2, 5.4; rows only in 5.4.
-    llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54], fallback=TC)
+    llm = fake_llm([REQ_51, REQ_52, REQ_54, {"objects": []}, {"objects": []}, OBJ_54] + [{"objects": []}] * 3, fallback=TC)
     lines = []
     plan = run(str(FIX / "sample.md"), llm, model="fake", log=lines.append)
     assert [r.id for r in plan.requirements] == ["REQ-5.1-1", "REQ-5.1-2", "REQ-5.2-1", "REQ-5.4-1"]
     assert [o.id for o in plan.objects] == ["OBJ-5.4-1"]
     checks = [i.check for i in plan.coverage_items if i.source_id == "OBJ-5.4-1"]
     assert checks == ["presence", "absence", "encoding_valid", "encoding_invalid", "boundary_min", "boundary_max", "boundary_outside"]
-    assert len(plan.test_cases) == len(plan.coverage_items) and plan.gaps == []
+    assert len(plan.test_cases) == len(plan.coverage_items) 
+    # the sample table has two rows; the scripted model only returns the first, so the second is reported
+    assert [(g.stage, g.clause_id) for g in plan.gaps] == [("model", "5.4")] and "1/2 rows" in plan.gaps[0].reason
     assert {t.coverage_item_id for t in plan.test_cases} == {i.id for i in plan.coverage_items}
     assert plan.source.sha256 == hashlib.sha256((FIX / "sample.md").read_bytes()).hexdigest()
     assert any("coverage items" in l for l in lines)

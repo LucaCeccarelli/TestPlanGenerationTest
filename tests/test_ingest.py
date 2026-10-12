@@ -249,3 +249,14 @@ def test_iso_pdf_finds_lowercase_titled_and_annex_clauses():
 def test_pdf_pages_have_no_running_headers():
     text = "\n".join(c.text for c in ingest(str(FIX / "OpenID4VP1-0.pdf")))
     assert " of 96" not in text
+
+
+def test_segment_counts_row_records():
+    got = segment(["1 Scope\nIntro text.\n2 Rows\nName: a | Type: x\nName: b | Type: y\n"])
+    assert [c.row_count for c in got] == [0, 2]
+
+
+def test_iso_741_has_33_rows():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    assert next(c for c in ingest(str(FIX / "iso_18013_5.pdf")) if c.id == "7.4.1").row_count == 33

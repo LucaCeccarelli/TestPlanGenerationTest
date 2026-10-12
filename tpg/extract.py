@@ -15,7 +15,7 @@ MODAL_RE = {
     "should_not": re.compile(r"\bshould\s+(not|never)\b"),
     "may": re.compile(r"\bmay\b(?!\s+not\b)"),
 }
-CHUNK_LIMIT = 8000
+CHUNK_LIMIT = 3000
 
 
 def norm(s: str) -> str:

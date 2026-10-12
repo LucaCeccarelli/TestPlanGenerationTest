@@ -146,6 +146,7 @@ class Clause(BaseModel):
     id: str
     title: str
     text: str
+    row_count: int = 0
 
 
 def _vocabulary(values: tuple[str, ...], default: Any = ...) -> Any:

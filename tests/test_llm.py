@@ -1,9 +1,13 @@
+import json
 import os
 
 import pytest
 from pydantic import BaseModel
 
-from tpg.llm import LLMError, OllamaLLM, clean_json, load_dotenv
+from tpg.llm import LLMError, OllamaLLM, clean_json, load_dotenv, salvage_json_array
+from tpg.models import TestObjectBatch
+
+NONCE_OBJ = {"name": "n", "kind": "field", "direction": "received", "presence": "mandatory", "source_quote": "q"}
 
 
 class Out(BaseModel):
@@ -103,3 +107,30 @@ def test_transport_timeout_becomes_llmerror(monkeypatch):
     monkeypatch.setattr(llm, "_chat", slow)
     with pytest.raises(LLMError):
         llm.complete("p", Out)
+
+
+def test_salvage_json_array_keeps_complete_elements():
+    assert json.loads(salvage_json_array('{"objects": [{"a": 1}, {"b": 2}, {"c":', "objects")) == {"objects": [{"a": 1}, {"b": 2}]}
+
+
+def test_salvage_json_array_none_without_complete_element():
+    assert salvage_json_array('{"objects": [{"a":', "objects") is None
+    assert salvage_json_array("nothing", "objects") is None
+
+
+def test_salvage_json_array_respects_braces_in_strings():
+    got = json.loads(salvage_json_array('{"objects": [{"a": "}{"}, {"b": "x', "objects"))
+    assert got == {"objects": [{"a": "}{"}]}
+
+
+def test_complete_salvages_truncated_batch(monkeypatch):
+    llm = OllamaLLM(model="m", host="http://x")
+    monkeypatch.setattr(llm, "_chat", lambda p, s: '{"objects": [' + ", ".join([json.dumps(NONCE_OBJ)] * 2) + ', {"name": "x')
+    assert len(llm.complete("p", TestObjectBatch).objects) == 2
+
+
+def test_complete_still_raises_when_nothing_salvageable(monkeypatch):
+    llm = OllamaLLM(model="m", host="http://x")
+    monkeypatch.setattr(llm, "_chat", lambda p, s: '{"objects": [{"name": "x')
+    with pytest.raises(LLMError):
+        llm.complete("p", TestObjectBatch)

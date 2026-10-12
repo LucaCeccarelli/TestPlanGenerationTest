@@ -100,6 +100,25 @@ def _accept(clause: Clause, drafts: list[TestObjectDraft], accepted: list[TestOb
     return failures
 
 
+def _recover_rows(clause: Clause, llm, accepted: list[TestObjectDraft], attempts: int) -> list[str]:
+    """Re-prompt for row records no accepted object quotes; return a failure naming the shortfall, if any."""
+    if not clause.row_count:
+        return []
+    rows = [ln for ln in clause.text.splitlines() if " | " in ln]
+    for _ in range(attempts):
+        quotes = [norm(a.source_quote) for a in accepted]
+        missing = [r for r in rows if not any(norm(r) in q or q in norm(r) for q in quotes)]
+        if not missing:
+            break
+        prompt = build_model_prompt(clause, "\n".join(missing), "missing rows: return objects only for these rows", [], [a.name for a in accepted])
+        try:
+            _accept(clause, llm.complete(prompt, TestObjectBatch).objects, accepted)
+        except LLMError:
+            pass
+    got = sum(" | " in a.source_quote for a in accepted)
+    return [f"{got}/{clause.row_count} rows returned"] if got < clause.row_count else []
+
+
 def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list[TestObject], Gap | None]:
     accepted: list[TestObjectDraft] = []
     open_failures: list[str] = []
@@ -122,6 +141,7 @@ def extract_objects_clause(clause: Clause, llm, attempts: int = 3) -> tuple[list
             if not failures:
                 break
         open_failures.extend(failures)
+    open_failures.extend(_recover_rows(clause, llm, accepted, attempts))
     merged = merge_objects(accepted)
     body = norm(clause.text)
     ordered = sorted(merged, key=lambda d: body.index(norm(d.source_quote)))

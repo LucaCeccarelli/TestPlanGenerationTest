@@ -164,7 +164,7 @@ def test_extract_clause_chunks_long_clause(fake_llm):
     long = Clause(id="9", title="t", text="\n".join(f"Item {i}: the unit shall do thing {i}." for i in range(400)))
     llm = fake_llm([{"requirements": []}] * 10)
     reqs, gap = extract_clause(long, llm)
-    assert gap is None and reqs == [] and 2 <= len(llm.prompts) <= 4
+    assert gap is None and reqs == [] and len(llm.prompts) == len(chunks(long.text)) >= 2
     assert "part 1/" in llm.prompts[0]
 
 
@@ -206,3 +206,19 @@ def test_extract_clause_keeps_valid_drafts_when_another_has_a_bad_modality(fake_
     reqs, gap = extract_clause(CLAUSE, llm)
     assert [r.modality for r in reqs] == ["shall_not"]
     assert gap is not None and "obligatory" in gap.reason and len(llm.prompts) == 3
+
+
+def test_chunk_limit_is_3000():
+    from tpg.extract import CHUNK_LIMIT
+    assert CHUNK_LIMIT == 3000
+
+
+def test_iso_741_chunks_under_limit():
+    from pathlib import Path
+    from tpg.ingest import ingest
+    p = Path(__file__).parent / "fixtures" / "iso_18013_5.pdf"
+    if not p.exists():
+        pytest.skip("ISO fixture not distributed")
+    c = next(c for c in ingest(str(p)) if c.id == "7.4.1")
+    parts = chunks(c.text)
+    assert len(parts) == 4 and max(map(len, parts)) < 3000

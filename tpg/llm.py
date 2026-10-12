@@ -1,7 +1,8 @@
 """The only module that talks to the network. Sends a JSON schema but never trusts the reply."""
 import os
+import re
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, get_origin
 
 from pydantic import BaseModel, ValidationError
 
@@ -54,6 +55,26 @@ def clean_json(text: str) -> str:
     raise LLMError("unterminated JSON in reply")
 
 
+def salvage_json_array(text: str, key: str) -> str | None:
+    """Recover the complete elements of a truncated `"key": [...]` array as a JSON object, or None if none closed."""
+    m = re.search(r'"%s"\s*:\s*\[' % re.escape(key), text)
+    if not m:
+        return None
+    pos, items = m.end(), []
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] not in "{[":
+            break
+        try:
+            item = clean_json(text[pos:])
+        except LLMError:
+            break
+        items.append(item)
+        pos += len(item)
+    return '{"%s": [%s]}' % (key, ", ".join(items)) if items else None
+
+
 class OllamaLLM:
     def __init__(
         self,
@@ -99,7 +120,14 @@ class OllamaLLM:
         except Exception as e:
             raise LLMError(f"LLM call failed: {e}") from e
         try:
-            return schema.model_validate_json(clean_json(raw))
+            try:
+                cleaned = clean_json(raw)
+            except LLMError:
+                lists = [n for n, f in schema.model_fields.items() if get_origin(f.annotation) is list]
+                cleaned = salvage_json_array(raw, lists[0]) if len(lists) == 1 else None
+                if cleaned is None:
+                    raise
+            return schema.model_validate_json(cleaned)
         except ValidationError as e:
             raise LLMError(f"reply did not match schema: {e.errors()[0]['msg']} at {e.errors()[0]['loc']}") from e
         except ValueError as e:

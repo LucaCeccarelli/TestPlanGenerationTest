@@ -318,9 +318,13 @@ def segment(pages: list[str]) -> list[Clause]:
                 last_number = head[0]
             elif current is not None and line:
                 current.text = (current.text + "\n" + line.lstrip(JOINED)).strip()
-    if clauses:
-        return _dedupe_ids(clauses)
-    return [Clause(id=f"p{n}", title="", text=page.strip()) for n, page in enumerate(pages, 1)]
+    if not clauses:
+        clauses = [Clause(id=f"p{n}", title="", text=page.strip()) for n, page in enumerate(pages, 1)]
+    else:
+        clauses = _dedupe_ids(clauses)
+    for c in clauses:
+        c.row_count = sum(" | " in line for line in c.text.splitlines())
+    return clauses
 
 
 def _dedupe_ids(clauses: list[Clause]) -> list[Clause]:
