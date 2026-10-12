@@ -1,0 +1,634 @@
+"""The grammar stage: four notation handlers, no LLM. Fixture data only; nothing here is a real standard."""
+from pathlib import Path
+
+import pytest
+
+from tpg.extract import norm
+from tpg.grammar import HANDLERS, harvest
+from tpg.ingest import ingest
+from tpg.model import check_object
+from tpg.models import Clause
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+def _draft(**kw) -> dict:
+    """An expected draft: the model's defaults with the stated fields overridden."""
+    base = {"kind": "field", "direction": "internal", "presence": "mandatory", "condition": None, "type": None,
+            "value_domain": None, "size": None, "relations": [], "applies_when": []}
+    return {**base, **kw}
+
+
+def _run(notation: str, text: str) -> list[dict]:
+    detect, parse = HANDLERS[notation]
+    return [d.model_dump() for block in detect(text) for d in parse(block)]
+
+
+def _members(notation: str, text: str) -> list[dict]:
+    """One block's drafts after the first: the declaration object the handler emits for the named
+    block itself, which `test_a_named_cddl_declaration_yields_the_structure_itself` and its ASN.1 and
+    JSON Schema twins pin in full, is not what these cases are about."""
+    return _run(notation, text)[1:]
+
+
+CDDL = """record = {
+  label: tstr .size (1..32),
+  ? count: uint,
+  mode: "fast" / "slow",
+}"""
+CDDL_EXPECTED = [
+    _draft(name="record", kind="structure", presence="unspecified", type="map", source_quote="record = {"),
+    _draft(name="label", type="tstr", size="1..32", relations=["member of record"],
+           source_quote="label: tstr .size (1..32),"),
+    _draft(name="count", presence="optional", type="uint", relations=["member of record"],
+           source_quote="? count: uint,"),
+    _draft(name="mode", value_domain='"fast" / "slow"', relations=["member of record"],
+           source_quote='mode: "fast" / "slow",'),
+]
+
+ABNF = '''token = prefix 1*8ALPHA [ suffix ]
+prefix = "x" / "y"
+suffix = "-a" / "-b"'''
+ABNF_EXPECTED = [
+    _draft(name="token", kind="structure", presence="unspecified", type="prefix 1*8ALPHA [ suffix ]", size="1*8",
+           source_quote="token = prefix 1*8ALPHA [ suffix ]"),
+    _draft(name="prefix", kind="structure", type='"x" / "y"', value_domain='"x" / "y"',
+           source_quote='prefix = "x" / "y"'),
+    _draft(name="suffix", kind="structure", presence="optional", type='"-a" / "-b"', value_domain='"-a" / "-b"',
+           source_quote='suffix = "-a" / "-b"'),
+]
+
+JSON_SCHEMA = """{
+  "type": "object",
+  "required": ["key"],
+  "properties": {
+    "key": {"type": "string", "minLength": 4, "maxLength": 16},
+    "flag": {"type": "string", "enum": ["on", "off"]}
+  }
+}"""
+JSON_SCHEMA_EXPECTED = [
+    _draft(name="key", type="string", size="minLength 4, maxLength 16",
+           source_quote='"key": {"type": "string", "minLength": 4, "maxLength": 16},'),
+    _draft(name="flag", presence="optional", type="string", value_domain="on / off",
+           source_quote='"flag": {"type": "string", "enum": ["on", "off"]}'),
+]
+
+ASN1 = """Entry ::= SEQUENCE {
+  name UTF8String (SIZE(1..64)),
+  state INTEGER { idle(0), busy(1) },
+  note UTF8String OPTIONAL
+}"""
+ASN1_EXPECTED = [
+    _draft(name="Entry", kind="structure", presence="unspecified", type="SEQUENCE",
+           source_quote="Entry ::= SEQUENCE {"),
+    _draft(name="name", type="UTF8String", size="1..64", relations=["member of Entry"],
+           source_quote="name UTF8String (SIZE(1..64)),"),
+    _draft(name="state", type="INTEGER", value_domain="idle(0), busy(1)", relations=["member of Entry"],
+           source_quote="state INTEGER { idle(0), busy(1) },"),
+    _draft(name="note", presence="optional", type="UTF8String", relations=["member of Entry"],
+           source_quote="note UTF8String OPTIONAL"),
+]
+
+WELL_FORMED = [("cddl", CDDL, CDDL_EXPECTED), ("abnf", ABNF, ABNF_EXPECTED),
+               ("json_schema", JSON_SCHEMA, JSON_SCHEMA_EXPECTED), ("asn1", ASN1, ASN1_EXPECTED)]
+
+
+@pytest.mark.parametrize("notation,text,expected", WELL_FORMED, ids=[c[0] for c in WELL_FORMED])
+def test_handler_reads_presence_size_and_value_list(notation, text, expected):
+    assert _run(notation, text) == expected
+
+
+MALFORMED = [
+    ("cddl", "record = {\n  label: tstr"),                     # the declaration is never closed
+    ("cddl", "record = {\n  nothing that is a member line\n}"),
+    ("abnf", 'token = "unterminated'),                         # not an element list
+    ("abnf", "The device = behaves oddly."),                   # prose that happens to carry an equals sign
+    ("json_schema", '{"properties": {"key": }}'),              # balanced braces, not JSON
+    ("json_schema", '{"type": "object"}'),                     # JSON, but declares no properties
+    ("asn1", "Entry ::= SEQUENCE {\n  name UTF8String"),       # the declaration is never closed
+    ("asn1", "Entry ::= SEQUENCE {\n  0 not-a-field\n}"),
+]
+
+
+@pytest.mark.parametrize("notation,text", MALFORMED, ids=[f"{n}-{i}" for i, (n, _) in enumerate(MALFORMED)])
+def test_malformed_block_yields_nothing_and_raises_nothing(notation, text):
+    assert _run(notation, text) == []
+
+
+NESTED = [
+    ("cddl", "outer = {\n  inner: {\n    a: int,\n  },\n  b: tstr,\n}", ["outer", "b"]),
+    ("asn1", "Nest ::= SEQUENCE {\n  one SEQUENCE {\n    deep INTEGER\n  },\n  two BOOLEAN\n}", ["Nest", "two"]),
+]
+
+
+@pytest.mark.parametrize("notation,text,expected", NESTED, ids=[c[0] for c in NESTED])
+def test_a_nested_group_yields_no_member_of_the_enclosing_declaration(notation, text, expected):
+    """A nested member belongs to the nested group; attributing it to the enclosing rule would be false."""
+    assert [d["name"] for d in _run(notation, text)] == expected
+
+
+def test_other_notations_do_not_fire_on_a_block():
+    """Each block is read by its own handler only; a handler that cannot parse a block yields nothing."""
+    for notation, text, _ in WELL_FORMED:
+        for other, _, _ in WELL_FORMED:
+            if other != notation:
+                assert _run(other, text) == [], f"{other} fired on the {notation} block"
+
+
+def test_harvest_without_a_formal_block_returns_nothing():
+    assert harvest(Clause(id="1", title="Scope", text="This document describes the sample device.")) == []
+
+
+def test_harvest_deduplicates_by_name_and_quote():
+    clause = Clause(id="9", title="Twice", text=CDDL + "\n" + CDDL)
+    assert [d.name for d in harvest(clause)] == ["record", "label", "count", "mode"]
+
+
+# the declaration object of a named block, then its members. The ABNF rules are themselves the
+# declarations RFC 5234 section 2.2 names, and the fixture's JSON Schema carries no `$id`, so those
+# two notations contribute no extra object here.
+FIXTURE_OBJECTS = {
+    "cddl": ["record", "label", "count", "mode"],
+    "abnf": ["token", "prefix", "suffix"],
+    "json_schema": ["key", "flag"],
+    "asn1": ["Entry", "name", "state", "note"],
+}
+
+
+@pytest.fixture(scope="module")
+def clause_55() -> Clause:
+    return next(c for c in ingest(str(FIX / "sample.md")) if c.id == "5.5")
+
+
+def test_harvest_reads_all_four_notations_of_the_fixture_clause(clause_55):
+    names = [d.name for d in harvest(clause_55)]
+    assert names == [n for objects in FIXTURE_OBJECTS.values() for n in objects]
+
+
+@pytest.mark.parametrize("notation", list(FIXTURE_OBJECTS))
+def test_fixture_clause_object_inventory_per_notation(notation, clause_55):
+    assert [d.name for d in _run_drafts(notation, clause_55.text)] == FIXTURE_OBJECTS[notation]
+
+
+def _run_drafts(notation: str, text: str):
+    detect, parse = HANDLERS[notation]
+    return [d for block in detect(text) for d in parse(block)]
+
+
+def test_every_quote_is_a_verbatim_line_of_the_clause(clause_55):
+    drafts = harvest(clause_55)
+    assert drafts
+    for n, d in enumerate(drafts, 1):
+        assert check_object(clause_55, n, d) is None
+        assert norm(d.source_quote) in {norm(line) for line in clause_55.text.splitlines()}
+
+
+def _fixture_dumps(name: str) -> list[dict]:
+    clause = next(c for c in ingest(str(FIX / name)) if c.id == "5.5")
+    return [{**d.model_dump(), "source_quote": norm(d.source_quote)} for d in harvest(clause)]
+
+
+@pytest.mark.parametrize("name", ["sample.html", "sample.docx", "sample.pdf"])
+def test_fixture_declarations_are_harvested_from_every_format(name):
+    """Every attribute, not only the names, must survive each reader, or a handler read the layout."""
+    assert _fixture_dumps(name) == _fixture_dumps("sample.md")
+
+
+CLOSING_LINE = [
+    ("asn1", "Pair ::= SEQUENCE {\n  one INTEGER,\n  two BOOLEAN }", ["Pair", "one", "two"]),
+    ("cddl", "pair = {\n  one: int,\n  two: tstr }", ["pair", "one", "two"]),
+]
+
+
+@pytest.mark.parametrize("notation,text,expected", CLOSING_LINE, ids=[c[0] for c in CLOSING_LINE])
+def test_a_member_sharing_its_line_with_the_closing_bracket_is_read(notation, text, expected):
+    """A declaration may close on its last member's line; that member is still a member."""
+    assert [d["name"] for d in _run(notation, text)] == expected
+
+
+def test_a_member_sharing_its_line_with_the_closing_bracket_keeps_its_type():
+    assert _members("asn1", CLOSING_LINE[0][1])[1] == _draft(name="two", type="BOOLEAN",
+                                                         relations=["member of Pair"], source_quote="two BOOLEAN")
+
+
+ABNF_REJECTED = [
+    "DeviceType = [",                      # a rule head of another notation: the element list does not close
+    "Group = a )",                         # a closer with no opener
+    "Repeat = *",                          # a repetition of nothing: no complete element
+    "x = the device is ready",             # prose: no operator, no literal, no numeric, no declared word
+]
+
+
+@pytest.mark.parametrize("text", ABNF_REJECTED, ids=[t.split(" =")[0] for t in ABNF_REJECTED])
+def test_abnf_rejects_an_element_list_that_is_not_one(text):
+    assert _run("abnf", text) == []
+
+
+def test_abnf_accepts_a_bare_reference_to_a_rule_declared_in_the_same_clause():
+    assert [d["name"] for d in _run("abnf", "alias = target\ntarget = %x41")] == ["alias", "target"]
+
+
+CDDL_COMMENT = """record = {
+  label: tstr,            ; the label as issued
+  ? count: uint .size 2,  ; how many
+}"""
+
+
+def test_a_cddl_comment_does_not_reach_the_type():
+    got = _members("cddl", CDDL_COMMENT)
+    assert [(d["name"], d["type"], d["size"]) for d in got] == [("label", "tstr", None), ("count", "uint", "2")]
+    assert got[0]["source_quote"] == "label: tstr,            ; the label as issued"
+
+
+def test_a_semicolon_inside_a_cddl_literal_is_not_a_comment():
+    assert _members("cddl", 'r = {\n  mode: "a;b",\n}')[0]["value_domain"] == '"a;b"'
+
+
+def test_a_positional_cddl_array_yields_the_structure_itself():
+    """Positional members have no names to emit, so the declaration is kept as one structure object."""
+    assert _run("cddl", "pair = [\n  tstr,\n  int,\n]") == [
+        _draft(name="pair", kind="structure", presence="unspecified", type="array",
+               source_quote="pair = [")]
+
+
+def test_an_occurrence_marker_without_a_number_is_written_as_text():
+    """A bare marker is no limit to test; a boundary item built on it would read as nonsense."""
+    got = _members("cddl", "r = {\n  * extra: tstr,\n  + more: int,\n  2*8 some: uint,\n}")
+    assert [d["size"] for d in got] == ["any number of occurrences", "one or more occurrences", "2*8"]
+
+
+def test_only_the_bracket_that_closes_the_declaration_is_stripped_from_a_member():
+    """The member's own constraint ends in a bracket too; cutting that one would break its type."""
+    got = _members("asn1", "One ::= SEQUENCE {\n  name UTF8String (SIZE(1..64)) }")
+    assert got == [_draft(name="name", type="UTF8String", size="1..64", relations=["member of One"],
+                          source_quote="name UTF8String (SIZE(1..64))")]
+
+
+def test_an_asn1_member_records_the_type_it_belongs_to():
+    """Two structures of one clause may declare the same member name; the merge tells them apart by
+    the declaration the handler names here."""
+    text = "One ::= SEQUENCE {\n  item INTEGER\n}\nTwo ::= SEQUENCE {\n  item BOOLEAN\n}"
+    assert [(d["name"], d["type"], d["relations"]) for d in _run("asn1", text)] == [
+        ("One", "SEQUENCE", []), ("item", "INTEGER", ["member of One"]),
+        ("Two", "SEQUENCE", []), ("item", "BOOLEAN", ["member of Two"])]
+
+
+# --- constraint harvesting per notation: value domains and sizes ---------------------------------
+
+CDDL_VALUE_CONTROLS = [
+    ("uint .lt 10", "less than 10"),
+    ("uint .le 9", "at most 9"),
+    ("uint .gt 3", "greater than 3"),
+    ("uint .ge 1", "at least 1"),
+    ("uint .eq 5", "equal to 5"),
+    ("uint .ne 0", "not equal to 0"),
+    ('tstr .regexp "[0-9]+"', 'matching "[0-9]+"'),
+    ("uint .bits flags", "bits set within flags"),
+]
+
+
+@pytest.mark.parametrize("type_text,expected", CDDL_VALUE_CONTROLS, ids=[t.split()[1] for t, _ in CDDL_VALUE_CONTROLS])
+def test_a_cddl_value_control_operator_becomes_the_value_domain(type_text, expected):
+    """RFC 8610 section 3.8.2 and 3.8.3: these operators bound the value, not the encoded length."""
+    got = _members("cddl", "r = {\n  item: %s,\n}" % type_text)
+    assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [(expected, None, type_text.split()[0])]
+
+
+def test_a_cddl_size_control_is_a_size_and_not_a_value_domain():
+    """RFC 8610 section 3.8.1: `.size` bounds the encoded length, so it states no domain of values."""
+    got = _members("cddl", "r = {\n  item: bstr .size (4..8),\n}")
+    assert [(d["value_domain"], d["size"]) for d in got] == [(None, "4..8")]
+
+
+def test_a_bare_cddl_range_is_both_a_value_domain_and_a_size():
+    """RFC 8610 section 2.2.2: a range is a range of values, so it is a domain to violate and a pair
+    of bounds to probe at the same time."""
+    got = _members("cddl", "r = {\n  item: 1..32,\n}")
+    assert [(d["value_domain"], d["size"], d["type"]) for d in got] == [("1..32", "1..32", None)]
+
+
+def test_a_bounded_occurrence_inside_a_cddl_type_becomes_a_size():
+    got = _members("cddl", "r = {\n  item: [2*4 tstr],\n}")
+    assert [(d["size"], d["type"]) for d in got] == [("2*4", "[2*4 tstr]")]
+
+
+def test_a_cddl_group_choice_marker_does_not_reach_the_type():
+    """RFC 8610 section 2.2.2: `//` separates the branches of a group choice; it is not part of a type."""
+    got = _members("cddl", "r = {\n  one: tstr, //\n  two: uint\n}")
+    assert [(d["name"], d["type"]) for d in got] == [("one", "tstr"), ("two", "uint")]
+
+
+CDDL_SINGLE = """Outer = {
+  "inner" : Inner
+}
+Inner = tstr
+Bounded = bstr .size 32
+Tagged = #6.24(bstr .cbor Inner)"""
+
+
+def test_a_single_line_cddl_rule_declares_a_named_type():
+    """RFC 8610 section 3.1: a rule whose right-hand side is a bare type assigns that type to the
+    name. It declares the name, so it yields one object; nothing states whether it must appear."""
+    assert _run("cddl", CDDL_SINGLE)[2:] == [
+        _draft(name="Inner", kind="structure", presence="unspecified", type="tstr",
+               source_quote="Inner = tstr"),
+        _draft(name="Bounded", kind="structure", presence="unspecified", type="bstr", size="32",
+               source_quote="Bounded = bstr .size 32"),
+        _draft(name="Tagged", kind="structure", presence="unspecified", type="#6.24(bstr .cbor Inner)",
+               source_quote="Tagged = #6.24(bstr .cbor Inner)"),
+    ]
+
+
+CDDL_NOT_A_RULE = [
+    "The device = ready",                    # two bare words: prose, not a type
+    "Note that quality = reliability.",      # a sentence
+    "Outer = {",                             # a block head, read as a block
+    'Mode = "fast" / "slow"',                # an alternation, which the ABNF handler reads
+]
+
+
+@pytest.mark.parametrize("line", CDDL_NOT_A_RULE, ids=[l.split(" =")[0][:12] for l in CDDL_NOT_A_RULE])
+def test_a_line_that_is_not_a_cddl_type_assignment_yields_no_object(line):
+    assert [d["name"] for d in _run("cddl", CDDL_SINGLE + "\n" + line)] == \
+        ["Outer", "inner", "Inner", "Bounded", "Tagged"]
+
+
+def test_a_single_line_cddl_rule_needs_the_notation_in_evidence():
+    """A bare `name = type` line is a shape a sentence can take too, so it is only read where the
+    text independently shows CDDL: at least one bracketed declaration."""
+    assert _run("cddl", "Inner = tstr\nBounded = bstr .size 32") == []
+
+
+def test_a_type_keyed_cddl_entry_yields_no_field():
+    """RFC 8610 section 3.5.1: the key before `=>` is a type, so it names no field of the map."""
+    assert [d["name"] for d in _run("cddl", "r = {\n  * tstr => any,\n  \"named\" => uint,\n}")] == ["r", "named"]
+
+
+def test_a_map_of_only_type_keyed_entries_yields_the_structure_itself():
+    """The entries name no field, but the declaration still declares the map, so it is not lost."""
+    assert _run("cddl", "Index = {\n  + tstr => any\n}") == [
+        _draft(name="Index", kind="structure", presence="unspecified", type="map",
+               source_quote="Index = {")]
+
+
+# --- an integer-keyed CDDL member (RFC 8610 section 3.5.1) --------------------------------------
+
+CDDL_INTEGER_KEYED = """Options = {
+  ? 0: tstr,
+  ? 1 : uint .size 1,
+  10: bstr
+}"""
+
+
+def test_an_integer_keyed_cddl_member_is_a_field():
+    """RFC 8610 section 3.5.1 admits a value in the key position, and section 3.5.1 makes
+    `value ":"` shorthand for `value "=>"`, so an integer key is the key itself and not a text
+    string. An integer-keyed map is the idiomatic CBOR pattern, so each entry is a field."""
+    assert _run("cddl", CDDL_INTEGER_KEYED) == [
+        _draft(name="Options", kind="structure", presence="unspecified", type="map",
+               source_quote="Options = {"),
+        _draft(name="Options[0]", presence="optional", type="tstr", relations=["member of Options"],
+               source_quote="? 0: tstr,"),
+        _draft(name="Options[1]", presence="optional", type="uint", size="1",
+               relations=["member of Options"], source_quote="? 1 : uint .size 1,"),
+        _draft(name="Options[10]", type="bstr", relations=["member of Options"],
+               source_quote="10: bstr"),
+    ]
+
+
+def test_an_integer_keyed_member_is_named_for_its_structure_and_its_key():
+    """The key alone is no name: two structures of the same standard both key an entry `0`, and the
+    name is what the evaluation matches on and what a test case names as the thing under check. The
+    structure alone is no name either, since a map holds several differently-keyed entries."""
+    names = [d["name"] for d in _run("cddl", "A = {\n  0: tstr,\n  1: uint\n}\nB = {\n  0: bool\n}")]
+    assert names == ["A", "A[0]", "A[1]", "B", "B[0]"]
+    assert len(set(names)) == len(names)
+
+
+def test_an_integer_key_written_with_the_type_arrow_is_the_same_member():
+    """RFC 8610 section 3.5.1: a value in the key position may be written with either separator, and
+    a type that is one value matches exactly that value, so `0 => t` and `0: t` are one member."""
+    arrow = _members("cddl", "r = {\n  0 => tstr\n}")
+    assert arrow == [_draft(name="r[0]", type="tstr", relations=["member of r"],
+                            source_quote="0 => tstr")]
+    colon = _members("cddl", "r = {\n  0: tstr\n}")
+    assert [{**d, "source_quote": ""} for d in arrow] == [{**d, "source_quote": ""} for d in colon]
+
+
+def test_a_negative_integer_key_is_a_field():
+    """RFC 8610 section 2.1: an integer value may be negative, and CBOR map keys routinely are."""
+    assert [d["name"] for d in _members("cddl", "r = {\n  ? -1: tstr\n}")] == ["r[-1]"]
+
+
+CDDL_UNREAD_KEY = [
+    "r = {\n  1.5: tstr\n}",            # a floating-point key: legal, but no field a plan can name
+    "r = {\n  h'00': tstr\n}",          # a byte-string key, likewise
+    "r = {\n  0xff: tstr\n}",           # not an integer value in the notation's own syntax
+]
+
+
+@pytest.mark.parametrize("text", CDDL_UNREAD_KEY, ids=["float", "bytes", "hex"])
+def test_a_key_outside_the_boundary_yields_no_field_and_raises_nothing(text):
+    """The boundary is drawn at integers: the rest of RFC 8610's `value` production is legal in the
+    key position and vanishingly rare in practice, and reading it is not refused, only not done."""
+    assert _run("cddl", text) == []
+
+
+CDDL_PROSE_IN_A_BLOCK = """Capabilities = {
+? 0: uint,
+1: the device shall support at least one retrieval method,
+2: see 8.1.1.1 for the encoding
+}"""
+
+
+def test_a_numbered_prose_line_inside_a_cddl_block_mints_no_field():
+    """A key pattern that accepts digits accepts the leader of a numbered list, and a prose list is
+    what the project has twice been bitten by. The guard is the type side: what follows the key must
+    be an element of the notation's own type syntax - one type, its controls, its alternatives, its
+    bracketed groups - and a sentence is a run of bare words, which is none of those."""
+    assert [d["name"] for d in _run("cddl", CDDL_PROSE_IN_A_BLOCK)] == ["Capabilities", "Capabilities[0]"]
+
+
+CDDL_PROSE_ONLY = [
+    "Methods = {\n1: the reader shall support NFC,\n2: the reader shall support BLE\n}",
+    "Window = {\n10:30 to 11:00 is the response window\n}",
+    "Table = {\n1: NFC data retrieval, see Table 5\n}",
+]
+
+
+@pytest.mark.parametrize("text", CDDL_PROSE_ONLY, ids=["list", "clock", "table"])
+def test_a_block_of_only_prose_lines_yields_no_object_at_all(text):
+    """No line is a member the parser read, so the parser - the acceptance gate - yields nothing,
+    not even the name on the first line."""
+    assert _run("cddl", text) == []
+
+
+CDDL_REAL_TYPES = ["tstr", "any", "uint .size 1", "bstr .size (4..8)", '"fast" / "slow"', "1..32",
+                   "[2*4 tstr]", "#6.24(bstr .cbor Foo)", "{ * tstr => any }", "uint / nil",
+                   "[+ Foo]", "(Foo / Bar)", "h'0102'", "tstr .regexp \"[0-9]+\"", "Foo // Bar"]
+
+
+@pytest.mark.parametrize("type_text", CDDL_REAL_TYPES, ids=range(len(CDDL_REAL_TYPES)))
+def test_the_member_gate_admits_every_shape_of_cddl_type(type_text):
+    """The gate is on the value side of every member, so a type expression the notation permits must
+    still pass it: an identifier, a literal, an alternation, a range, a bracketed group, a tagged
+    type, a control operator. Pinned because a gate that silently narrows is worse than no gate."""
+    assert _members("cddl", "r = {\n  item: %s\n}" % type_text) != []
+
+
+def test_abnf_numeric_value_alternatives_are_a_value_domain():
+    """RFC 5234 section 2.3: a numeric terminal is a value, so an alternation of them is a domain."""
+    got = _run("abnf", "flag = %x41 / %x42\nalso = %d13.10")
+    assert [(d["name"], d["value_domain"]) for d in got] == [("flag", "%x41 / %x42"), ("also", "%d13.10")]
+
+
+def test_an_abnf_value_range_is_a_value_domain_and_a_size():
+    """RFC 5234 section 3.4: a value range alternative states which values are allowed and its two
+    endpoints are the bounds to probe."""
+    got = _run("abnf", "digit = %x30-39")
+    assert [(d["value_domain"], d["size"]) for d in got] == [("%x30-39", "%x30-39")]
+
+
+def test_an_abnf_specific_repetition_is_a_size():
+    """RFC 5234 section 3.7: `<n>element` is exactly n occurrences, which is a count to probe."""
+    assert [d["size"] for d in _run("abnf", "year = 4DIGIT\nmix = 1*8ALPHA\nver = \"1.0\"")] == ["4", "1*8", None]
+
+
+JSON_BOUNDS = """{
+  "$id": "https://example.invalid/schema",
+  "properties": {
+    "amount": {"type": "integer", "minimum": 1, "maximum": 99, "multipleOf": 3},
+    "ratio": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+    "bag": {"type": "object", "minProperties": 1, "maxProperties": 4}
+  }
+}"""
+
+
+def test_json_schema_numeric_bounds_are_a_value_domain():
+    got = {d["name"]: d["value_domain"] for d in _members("json_schema", JSON_BOUNDS)}
+    assert got == {"amount": "minimum 1, maximum 99, multipleOf 3",
+                   "ratio": "exclusiveMinimum 0, exclusiveMaximum 1", "bag": None}
+
+
+def test_json_schema_counts_are_a_size():
+    got = {d["name"]: d["size"] for d in _members("json_schema", JSON_BOUNDS)}
+    assert got == {"amount": "minimum 1, maximum 99", "ratio": None, "bag": "minProperties 1, maxProperties 4"}
+
+
+def test_json_schema_keys_the_merge_on_the_schema_id():
+    """A schema has no declaration name in the notation except `$id`, which identifies the schema."""
+    assert [d["relations"] for d in _members("json_schema", JSON_BOUNDS)] == \
+        [["member of https://example.invalid/schema"]] * 3
+
+
+ASN1_CONSTRAINED = """Spec ::= SEQUENCE {
+  alpha PrintableString (FROM ("0".."9")),
+  shape PrintableString (PATTERN "[0-9]{4}"),
+  count INTEGER (1..100)
+}"""
+
+
+def test_asn1_value_constraints_become_the_value_domain():
+    """X.680 clause 51: a permitted-alphabet, a pattern and a value range each bound the value; only
+    the range is also a pair of bounds to probe, and SIZE is a length, never a value."""
+    got = [(d["name"], d["type"], d["value_domain"], d["size"]) for d in _members("asn1", ASN1_CONSTRAINED)]
+    assert got == [("alpha", "PrintableString", 'FROM ("0".."9")', None),
+                   ("shape", "PrintableString", 'PATTERN "[0-9]{4}"', None),
+                   ("count", "INTEGER", "1..100", "1..100")]
+
+
+MIXED = '''Rec = {
+  age: 1..120,
+  score: uint .lt 100,
+  hex: bstr .size (4..8),
+}
+Cap = uint .ge 1
+digit = %x30-39
+{
+  "properties": {"amount": {"type": "integer", "minimum": 1, "maximum": 99}}
+}
+Spec ::= SEQUENCE {
+  count INTEGER (1..100)
+}'''
+
+
+def test_every_notation_can_state_a_value_domain_and_a_numeric_size():
+    """The two preconditions the derivation ladder gates its `value_invalid` and `boundary_outside`
+    items on: a `value_domain`, and a `size` carrying a digit. Each notation must be able to supply
+    both out of its own constraint syntax, or those two rungs can never fire."""
+    drafts = harvest(Clause(id="x", title="Declarations", text=MIXED))
+    assert {d.name for d in drafts if d.value_domain} == {"age", "score", "Cap", "digit", "amount", "count"}
+    assert {d.name for d in drafts if d.size and any(c.isdigit() for c in d.size)} == \
+        {"age", "hex", "digit", "amount", "count"}
+
+
+# --- the named block itself: one object per declaration, typed by its declaring construct --------
+
+CDDL_CONSTRUCTS = [("{", "map"), ("[", "array"), ("(", "group")]
+
+
+@pytest.mark.parametrize("bracket,type_text", CDDL_CONSTRUCTS, ids=[t for _, t in CDDL_CONSTRUCTS])
+def test_a_named_cddl_declaration_yields_the_structure_itself(bracket, type_text):
+    """RFC 8610 section 2.1: braces enclose a map, square brackets an array, parentheses a group. The
+    bracket the assignment opens is what says which of the three the name denotes, so it is the type
+    of the structure object. The members keep their own objects; this one is the block."""
+    closer = {"{": "}", "[": "]", "(": ")"}[bracket]
+    got = _run("cddl", "Top = %s\n  item: tstr,\n%s" % (bracket, closer))
+    assert got == [_draft(name="Top", kind="structure", presence="unspecified", type=type_text,
+                          source_quote="Top = " + bracket),
+                   _draft(name="item", type="tstr", relations=["member of Top"],
+                          source_quote="item: tstr,")]
+
+
+ASN1_CONSTRUCTS = ["SEQUENCE", "SET", "CHOICE"]
+
+
+@pytest.mark.parametrize("construct", ASN1_CONSTRUCTS)
+def test_a_named_asn1_declaration_yields_the_structure_itself(construct):
+    """X.680 clauses 25, 27 and 29: the construct keyword after `::=` is the type the name denotes,
+    written as the notation writes it."""
+    got = _run("asn1", "Top ::= %s {\n  item INTEGER\n}" % construct)
+    assert got[0] == _draft(name="Top", kind="structure", presence="unspecified", type=construct,
+                            source_quote="Top ::= %s {" % construct)
+    assert [d["name"] for d in got] == ["Top", "item"]
+
+
+def test_an_abnf_rule_is_already_the_structure_it_declares():
+    """RFC 5234 section 2.2: a rule *is* the named block, and its element list is its definition, so
+    the ABNF handler needs no second object for it. Pinned so the symmetry is not lost."""
+    got = _run("abnf", 'token = prefix 1*8ALPHA\nprefix = "x"')
+    assert [(d["name"], d["kind"], d["type"]) for d in got] == [
+        ("token", "structure", "prefix 1*8ALPHA"), ("prefix", "structure", '"x"')]
+
+
+JSON_IDENTIFIED = """{
+  "$id": "https://example.invalid/schema",
+  "type": "object",
+  "properties": {"key": {"type": "string"}}
+}"""
+
+
+def test_a_json_schema_declaration_yields_the_structure_only_where_it_has_an_id():
+    """JSON Schema 2020-12 core section 8.2.1: `$id` is the only name the notation gives a schema. A
+    schema without one declares no name, so no structure object is invented for it."""
+    got = _run("json_schema", JSON_IDENTIFIED)
+    assert got[0] == _draft(name="https://example.invalid/schema", kind="structure", presence="unspecified",
+                            type="object", source_quote='"$id": "https://example.invalid/schema",')
+    assert [d["name"] for d in got] == ["https://example.invalid/schema", "key"]
+    assert [d["name"] for d in _run("json_schema", JSON_SCHEMA)] == ["key", "flag"]
+
+
+def test_a_structure_object_states_no_member_in_its_relations():
+    """A member already records the edge as `member of X`, in the direction that is a testable
+    statement. Repeating it on the block would mint one `consistency` item per member whose purpose
+    is the member's own presence item, and would key the generic group on the member list twice."""
+    got = _run("cddl", "Top = {\n  one: tstr,\n  two: uint,\n}")
+    assert got[0]["relations"] == [] and [d["relations"] for d in got[1:]] == [["member of Top"]] * 2
+
+
+def test_the_structure_quote_is_the_declaring_line_and_not_the_whole_block():
+    """D24 requires the quote to be verbatim clause text; a whole block is a quote a plan page cannot
+    print and a provenance comparison cannot use."""
+    for notation, text, _ in WELL_FORMED:
+        for d in _run(notation, text):
+            assert "\n" not in d["source_quote"]

@@ -7,7 +7,7 @@ import pytest
 from tpg.extract import norm
 from tpg.ingest import ingest
 from tpg.llm import OllamaLLM, load_dotenv
-from tpg.pipeline import run
+from tpg.pipeline import ics_coverage, run
 
 FIX = Path(__file__).parent / "fixtures"
 MODEL = os.environ.get("TPG_MODEL", "gemma4:31b")
@@ -27,21 +27,63 @@ def llm():
 
 def _assert_plan_is_sound(plan, path):
     clauses = {c.id: c for c in ingest(str(path))}
+    # zero gaps is the acceptance criterion; the checks below therefore need no gap tolerance
     assert plan.gaps == [], [g.model_dump() for g in plan.gaps]
     assert plan.requirements, "no requirements extracted"
     for r in plan.requirements:
         assert norm(r.source_quote) in norm(clauses[r.clause_id].text), r.id
-        link = next(t for t in plan.traceability if t.requirement_id == r.id)
-        kinds = [c.kind for c in plan.test_cases if c.id in link.test_case_ids]
-        assert kinds.count("nominal") == 1, r.id
+    for o in plan.objects:
+        assert norm(o.source_quote) in norm(clauses[o.clause_id].text), o.id
+    # D21: every feature the ICS declares mandatory or optional is covered by at least one item, which
+    # is the X.291 clause 10.4 criterion, held by construction, so the run must reach 100 per cent
+    covered_sources = {c.source_id for c in plan.coverage_items}
+    for i in plan.ics:
+        if i.status in ("mandatory", "optional"):
+            assert i.source_id in covered_sources, i.id
+    assert ics_coverage(plan.ics, plan.coverage_items)[0] == len([i for i in plan.ics if i.status in ("mandatory", "optional")])
+    # D23: every coverage item belongs to one of the four X.291 clause 10.2.2 test groups
+    for c in plan.coverage_items:
+        assert c.group in ("capability", "valid_behaviour", "invalid_behaviour", "inopportune_behaviour"), (c.id, c.group)
+    # D25: a reference item stands in for a generic test suite, so it exists only where the object's own
+    # name recurs in another clause. Asserted on the object's name rather than on the group key, which
+    # D31 widened to the attributes that determine the group's purposes.
+    objs = {o.id: o for o in plan.objects}
+    clauses_by_name = {}
+    for o in plan.objects:
+        clauses_by_name.setdefault(norm(o.name), set()).add(o.clause_id)
+    for c in plan.coverage_items:
+        if c.check == "reference":
+            assert c.generic_group, c.id
+            assert c.source_id in objs, c.id
+            assert len(clauses_by_name[norm(objs[c.source_id].name)]) > 1, (c.id, objs[c.source_id].name)
+    # D22: applicability is verbatim text, always a list of strings, on every source and every item
+    for src in [*plan.requirements, *plan.objects, *plan.ics, *plan.coverage_items]:
+        assert isinstance(src.applies_when, list), src.id
+        assert all(isinstance(a, str) for a in src.applies_when), (src.id, src.applies_when)
+    covered = {t.coverage_item_id for t in plan.test_cases}
+    for i in plan.coverage_items:
+        assert i.id in covered, i.id
+    # every requirement, and every object the text states an attribute for, is traced to coverage
+    # items and to one test case each; an object with no stated attribute yields nothing by design
+    for r in plan.requirements:
+        link = next(t for t in plan.traceability if t.source_id == r.id)
+        assert link.coverage_item_ids, r.id
+        assert len(link.test_case_ids) == len(link.coverage_item_ids), r.id
+    for o in plan.objects:
+        link = next(t for t in plan.traceability if t.source_id == o.id)
+        stated = o.presence != "unspecified" or o.type or o.value_domain or o.size or o.relations or o.condition
+        assert link.coverage_item_ids or not stated, o.id
+        assert len(link.test_case_ids) == len(link.coverage_item_ids), o.id
 
 
 def test_sample_markdown(llm):
     plan = run(str(FIX / "sample.md"), llm, MODEL, log=print)
     _assert_plan_is_sound(plan, FIX / "sample.md")
-    assert {r.clause_id for r in plan.requirements} == {"5.1", "5.2"}
+    assert {r.clause_id for r in plan.requirements} == {"5.1", "5.2", "5.4"}
     cond = [r for r in plan.requirements if r.clause_id == "5.2" and r.modality == "shall_not"]
     assert cond and len(cond[0].conditions) == 2
+    assert any(o.name == "nonce" for o in plan.objects)
+    assert any(i.check == "boundary_max" for i in plan.coverage_items)
 
 
 def test_openid_clause_5_1(llm):

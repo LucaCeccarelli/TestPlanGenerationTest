@@ -1,66 +1,358 @@
-"""All data types. Pydantic v2. Drafts are what the LLM returns; ids are assigned by code."""
-from typing import Literal
+"""All data types. Pydantic v2.
 
-from pydantic import BaseModel, Field
+Drafts are what the LLM returns. Their vocabulary fields are typed `str`, not a Literal, because
+pydantic validates a whole reply in one go: a single out-of-vocabulary value would reject every draft
+in the batch, which costs a clause instead of a draft. A before-validator maps the common spellings,
+plurals, abbreviations and single-letter table codes onto the canonical value; anything it cannot map
+is kept as written so the per-draft check can reject just that draft. Scalars and lone strings are
+likewise coerced where a text or a list of text is wanted. The persisted types re-declare the strict
+fields, so the emitted plan still carries canonical values only.
+"""
+import json
+import re
+from typing import Any, Literal, get_args
 
-Modality = Literal["shall", "shall_not", "should", "may"]
+from pydantic import BaseModel, Field, field_validator
+
+Modality = Literal["shall", "shall_not", "should", "should_not", "may"]
+ObjectKind = Literal["field", "structure", "message", "parameter", "value", "behaviour"]
+Direction = Literal["received", "produced", "internal"]
+Presence = Literal["mandatory", "optional", "conditional", "unspecified"]
 Kind = Literal["nominal", "negative", "boundary"]
+Check = Literal["presence", "absence", "encoding_valid", "encoding_invalid", "value_valid", "value_invalid",
+                "boundary_min", "boundary_max", "boundary_outside", "consistency", "condition_true", "condition_false",
+                "nominal", "negative", "boundary", "capability", "inopportune", "reference"]
+Stage = Literal["extract", "model", "generate"]
+Origin = Literal["prose", "grammar"]
+# An ICS entry's status is the same vocabulary as an object's presence (ITU-T X.291 clause 10.4)
+Status = Presence
+# The four test groups of ITU-T X.291 clause 10.2.2
+Group = Literal["capability", "valid_behaviour", "invalid_behaviour", "inopportune_behaviour"]
+
+MODALITY_VALUES = get_args(Modality)
+OBJECT_KIND_VALUES = get_args(ObjectKind)
+DIRECTION_VALUES = get_args(Direction)
+PRESENCE_VALUES = get_args(Presence)
+
+KIND_WORDS = {
+    "field": "field", "attribute": "field", "element": "field", "datum": "field", "item": "field",
+    "structure": "structure", "struct": "structure", "record": "structure", "container": "structure",
+    "message": "message", "msg": "message", "packet": "message", "frame": "message",
+    "parameter": "parameter", "param": "parameter", "argument": "parameter", "option": "parameter",
+    "value": "value", "code": "value", "constant": "value",
+    "behaviour": "behaviour", "behavior": "behaviour", "operation": "behaviour", "action": "behaviour",
+    "procedure": "behaviour", "process": "behaviour", "function": "behaviour",
+}
+DIRECTION_WORDS = {
+    "received": "received", "receive": "received", "receives": "received", "incoming": "received",
+    "inbound": "received", "input": "received", "read": "received", "parsed": "received",
+    "produced": "produced", "produce": "produced", "produces": "produced", "outgoing": "produced",
+    "outbound": "produced", "output": "produced", "sent": "produced", "send": "produced", "written": "produced",
+    "internal": "internal", "internally": "internal", "stored": "internal", "none": "internal",
+}
+PRESENCE_WORDS = {
+    "mandatory": "mandatory", "required": "mandatory", "require": "mandatory", "must": "mandatory",
+    "optional": "optional", "opt": "optional", "may": "optional",
+    "conditional": "conditional", "cond": "conditional", "conditionally": "conditional",
+    "unspecified": "unspecified", "unknown": "unspecified", "unstated": "unspecified",
+}
+# ponytail: tables code presence as a letter, sometimes with a footnote mark ("M", "O", "Ca", "C/M");
+# the first letter of a short token decides. Drop this if a vocabulary ever collides on it.
+PRESENCE_LETTERS = {"m": "mandatory", "o": "optional", "c": "conditional", "u": "unspecified"}
+
+
+def _words(raw: Any) -> list[str]:
+    return re.findall(r"[a-z]+", str(raw).lower())
+
+
+def _negated(words: list[str]) -> bool:
+    return "not" in words or "never" in words
+
+
+def _match(words: list[str], table: dict[str, str]) -> str | None:
+    """A negated value states the opposite of what it names; nothing downstream re-grounds these
+    vocabularies, so refuse to guess and let the per-draft check ask for it again."""
+    if _negated(words):
+        return None
+    for w in words:
+        if w in table:
+            return table[w]
+        if w.endswith("s") and w[:-1] in table:
+            return table[w[:-1]]
+    return None
+
+
+def normalise_modality(raw: Any) -> str | None:
+    """Canonical modality, or None when the value states no recognisable obligation. Negation is part
+    of the vocabulary here, and `check_draft` re-grounds the result against the quoted sentence."""
+    words = _words(raw)
+    negated = _negated(words)
+    if "shall" in words or "must" in words:
+        return "shall_not" if negated else "shall"
+    if "should" in words:
+        return "should_not" if negated else "should"
+    if "may" in words and not negated:
+        return "may"
+    return None
+
+
+def normalise_object_kind(raw: Any) -> str | None:
+    return _match(_words(raw), KIND_WORDS)
+
+
+def normalise_direction(raw: Any) -> str | None:
+    return _match(_words(raw), DIRECTION_WORDS)
+
+
+def normalise_presence(raw: Any) -> str | None:
+    words = _words(raw)
+    hit = _match(words, PRESENCE_WORDS)
+    if hit:
+        return hit
+    if len(words) == 1 and len(words[0]) <= 2 and words[0][0] in PRESENCE_LETTERS:
+        return PRESENCE_LETTERS[words[0][0]]
+    return None
+
+
+def _canonical(raw: Any, normalise, default: str = "") -> str:
+    """The canonical value; `default` when the field was left unset, else the value as written so the
+    per-draft check can name it."""
+    if raw is None:
+        return default
+    return normalise(raw) or (raw if isinstance(raw, str) else str(raw))
+
+
+def as_str(v: Any) -> str:
+    """Text for a field a reply may fill with something else: a number becomes its digits, a structure
+    keeps its content as JSON, and a missing value or a bare flag becomes empty for the check to report."""
+    if v is None or isinstance(v, bool):
+        return ""
+    if isinstance(v, str):
+        return v.strip()
+    if isinstance(v, (int, float)):
+        return str(v)
+    return json.dumps(v, ensure_ascii=False)
+
+
+def as_text(v: Any) -> str | None:
+    """An optional text field: blank becomes None."""
+    return as_str(v) or None
+
+
+def as_text_list(v: Any) -> list[str]:
+    """A list of text: one string, a list of scalars, or null all become a list of non-empty strings."""
+    if v is None:
+        return []
+    items = v if isinstance(v, (list, tuple)) else [v]
+    return [t for t in (as_str(i) for i in items) if t]
+
+
+def as_name(v: Any) -> str:
+    """One short noun phrase for a name field: a list of candidates collapses to its first non-empty
+    entry, a number to its digits, anything unusable to empty so the declared default stands."""
+    items = as_text_list(v)
+    return items[0] if items else ""
 
 
 class Clause(BaseModel):
     id: str
     title: str
     text: str
+    row_count: int = 0
+
+
+def _vocabulary(values: tuple[str, ...], default: Any = ...) -> Any:
+    """A lenient `str` field that still advertises its vocabulary in the JSON schema, so a server
+    that enforces the schema constrains generation while a server that ignores it gets normalised."""
+    return Field(default, json_schema_extra={"enum": list(values)})
 
 
 class RequirementDraft(BaseModel):
     text: str
-    modality: Modality
+    modality: str = _vocabulary(MODALITY_VALUES)
     conditions: list[str] = Field(default_factory=list)
+    applies_when: list[str] = Field(default_factory=list)
     source_quote: str
+    # The data item the requirement constrains, for a name-based match against an official suite. Appended
+    # last so the advertised schema keeps the field order the prompt was tuned on; defaults to empty,
+    # because a measurement aid must never cost a requirement.
+    name: str = ""
+
+    @field_validator("text", "source_quote", mode="before")
+    @classmethod
+    def _text_fields(cls, v: Any) -> str:
+        return as_str(v)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _name(cls, v: Any) -> str:
+        return as_name(v)
+
+    @field_validator("conditions", "applies_when", mode="before")
+    @classmethod
+    def _list_fields(cls, v: Any) -> list[str]:
+        return as_text_list(v)
+
+    @field_validator("modality", mode="before")
+    @classmethod
+    def _modality(cls, v: Any) -> str:
+        return _canonical(v, normalise_modality)
 
 
 class Requirement(RequirementDraft):
     id: str
     clause_id: str
+    modality: Modality
 
 
 class RequirementBatch(BaseModel):
-    """LLM output schema for one clause."""
+    """LLM output schema for one clause chunk."""
     requirements: list[RequirementDraft]
 
 
-class TestCaseDraft(BaseModel):
+class TestObjectDraft(BaseModel):
+    name: str
+    kind: str = _vocabulary(OBJECT_KIND_VALUES)
+    direction: str = _vocabulary(DIRECTION_VALUES, "internal")
+    presence: str = _vocabulary(PRESENCE_VALUES, "unspecified")
+    condition: str | None = None
+    type: str | None = None
+    value_domain: str | None = None
+    size: str | None = None
+    relations: list[str] = Field(default_factory=list)
+    applies_when: list[str] = Field(default_factory=list)
+    source_quote: str
+
+    @field_validator("name", "source_quote", mode="before")
+    @classmethod
+    def _text_fields(cls, v: Any) -> str:
+        return as_str(v)
+
+    @field_validator("condition", "type", "value_domain", "size", mode="before")
+    @classmethod
+    def _optional_text_fields(cls, v: Any) -> str | None:
+        return as_text(v)
+
+    @field_validator("relations", "applies_when", mode="before")
+    @classmethod
+    def _list_fields(cls, v: Any) -> list[str]:
+        return as_text_list(v)
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _kind(cls, v: Any) -> str:
+        return _canonical(v, normalise_object_kind)
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def _direction(cls, v: Any) -> str:
+        return _canonical(v, normalise_direction, "internal")
+
+    @field_validator("presence", mode="before")
+    @classmethod
+    def _presence(cls, v: Any) -> str:
+        return _canonical(v, normalise_presence, "unspecified")
+
+
+class TestObject(TestObjectDraft):
+    id: str
+    clause_id: str
+    kind: ObjectKind
+    direction: Direction = "internal"
+    presence: Presence = "unspecified"
+    origin: Origin = "prose"
+
+
+class TestObjectBatch(BaseModel):
+    """LLM output schema for one clause chunk."""
+    objects: list[TestObjectDraft]
+
+
+class ICSItem(BaseModel):
+    """One line of the Implementation Conformance Statement proforma: a feature and its status."""
+    id: str
+    source_id: str
+    clause_id: str
+    feature: str
+    status: Status
+    condition: str | None = None
+    applies_when: list[str] = Field(default_factory=list)
+
+
+class CoverageItem(BaseModel):
+    id: str
+    source_id: str
+    clause_id: str
+    check: Check
     kind: Kind
+    group: Group
+    purpose: str
+    condition_assignment: dict[str, bool] | None = None
+    applies_when: list[str] = Field(default_factory=list)
+    generic_group: str | None = None
+
+
+class TestCaseDraft(BaseModel):
+    """LLM output schema for one coverage item."""
     objective: str
     preconditions: list[str] = Field(default_factory=list)
     inputs: list[str] = Field(default_factory=list)
     steps: list[str]
     expected_result: str
     pass_criteria: str
-    condition_assignment: dict[str, bool] | None = None
+
+    @field_validator("objective", "expected_result", "pass_criteria", mode="before")
+    @classmethod
+    def _text_fields(cls, v: Any) -> str:
+        return as_str(v)
+
+    @field_validator("preconditions", "inputs", "steps", mode="before")
+    @classmethod
+    def _list_fields(cls, v: Any) -> list[str]:
+        return as_text_list(v)
+
+
+class TestCaseBatchEntry(TestCaseDraft):
+    """One entry of a batched reply: the draft fields plus the id of the coverage item it answers. Every
+    field carries a default, the id included, so one incomplete entry costs that entry alone instead of
+    the whole batch: `check_test_case` then names the empty field and only that id is re-prompted."""
+    coverage_item_id: str = ""
+    objective: str = ""
+    steps: list[str] = Field(default_factory=list)
+    expected_result: str = ""
+    pass_criteria: str = ""
+
+    @field_validator("coverage_item_id", mode="before")
+    @classmethod
+    def _id_field(cls, v: Any) -> str:
+        return as_str(v)
+
+
+class TestCaseBatch(BaseModel):
+    """LLM output schema for the coverage items of one source. One list field only, so a reply cut off by
+    the context limit is salvaged element by element by `llm.complete`."""
+    cases: list[TestCaseBatchEntry]
 
 
 class TestCase(TestCaseDraft):
     id: str
-    requirement_id: str
-
-
-class TestCaseBatch(BaseModel):
-    """LLM output schema for one requirement."""
-    test_cases: list[TestCaseDraft]
+    source_id: str
+    coverage_item_id: str
+    kind: Kind
+    condition_assignment: dict[str, bool] | None = None
 
 
 class Gap(BaseModel):
-    requirement_id: str | None
+    source_id: str | None
     clause_id: str
-    stage: Literal["extract", "generate"]
+    stage: Stage
     reason: str
     attempts: int
 
 
 class TraceLink(BaseModel):
-    requirement_id: str
+    source_id: str
+    coverage_item_ids: list[str]
     test_case_ids: list[str]
 
 
@@ -74,6 +366,9 @@ class Source(BaseModel):
 class TestPlan(BaseModel):
     source: Source
     requirements: list[Requirement]
+    objects: list[TestObject] = Field(default_factory=list)
+    ics: list[ICSItem] = Field(default_factory=list)
+    coverage_items: list[CoverageItem] = Field(default_factory=list)
     test_cases: list[TestCase]
     traceability: list[TraceLink]
     gaps: list[Gap]

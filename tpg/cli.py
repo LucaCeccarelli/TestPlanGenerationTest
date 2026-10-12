@@ -1,10 +1,12 @@
-"""tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2]"""
+"""tpg generate <standard> [--out plan.json] [--format json|yaml] [--model M] [--clauses 5.1,5.2]
+[--no-model] [--no-grammar] [--no-deflate] [--no-batch]"""
 import argparse
 import sys
+from pathlib import Path
 
 from tpg.emit import write_plan
 from tpg.llm import LLMError, OllamaLLM, load_dotenv
-from tpg.pipeline import run
+from tpg.pipeline import clear_partial, ics_coverage_line, run
 
 DEFAULT_MODEL = "gemma4:31b"
 
@@ -23,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--model", default=DEFAULT_MODEL)
     g.add_argument("--clauses", help="comma-separated clause ids to restrict the run, e.g. 5.1,5.2")
     g.add_argument("--attempts", type=int, default=3)
+    g.add_argument("--no-model", action="store_true", help="skip the test-model stage (sentence-level requirements only)")
+    g.add_argument("--no-grammar", action="store_true", help="skip the grammar stage (no objects from formal declarations)")
+    g.add_argument("--no-deflate", action="store_true", help="keep every coverage item: no generic groups, no overlap removal")
+    g.add_argument("--no-batch", action="store_true", help="generate one LLM call per coverage item instead of one per source")
     args = parser.parse_args(argv)
 
     if args.attempts < 1:
@@ -36,6 +42,20 @@ def main(argv: list[str] | None = None) -> int:
         _err(f"cannot read {args.standard}: {e.strerror or e}")
         return 1
 
+    # The run is hours long and writes beside --out as it goes, so the path is proved writable now
+    # rather than after the last model call. A missing parent directory is refused and not created:
+    # a mistyped path that is silently created puts the result where nobody will look for it, while
+    # refusing costs one mkdir and a re-run that has not yet spent anything.
+    try:
+        existed = Path(args.out).exists()
+        with open(args.out, "a"):
+            pass
+        if not existed:
+            Path(args.out).unlink()
+    except OSError as e:
+        _err(f"cannot write {args.out}: {e.strerror or e}")
+        return 1
+
     load_dotenv()
     llm = OllamaLLM(model=args.model)
     try:
@@ -46,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     clause_ids = [c.strip() for c in args.clauses.split(",") if c.strip()] if args.clauses else None
     try:
         plan = run(args.standard, llm, args.model, clause_ids=clause_ids, attempts=args.attempts,
-                   log=lambda s: print(s, file=sys.stderr))
+                   log=lambda s: print(s, file=sys.stderr), use_model=not args.no_model,
+                   use_grammar=not args.no_grammar, deflate=not args.no_deflate, batch=not args.no_batch,
+                   out=args.out)
     except ValueError as e:
         _err(str(e))
         return 1
@@ -55,7 +77,10 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         _err(f"cannot write {args.out}: {e.strerror or e}")
         return 1
-    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps")
+    clear_partial(args.out)
+    _err(f"wrote {args.out}: {len(plan.requirements)} requirements, {len(plan.objects)} objects, {len(plan.ics)} ICS items, "
+         f"{len(plan.coverage_items)} coverage items, {len(plan.test_cases)} test cases, {len(plan.gaps)} gaps, "
+         f"{ics_coverage_line(plan.ics, plan.coverage_items)}")
     return 2 if plan.gaps else 0
 
 

@@ -1,6 +1,5 @@
-import json
-from tpg.models import (Clause, Requirement, TestCase, Gap, TraceLink, Source,
-                        TestPlan, RequirementBatch, TestCaseBatch)
+from tpg.models import (CoverageItem, Gap, ICSItem, Requirement, RequirementBatch, Source, TestCase, TestObject,
+                        TestObjectBatch, TestPlan, TraceLink)
 
 
 def test_testplan_round_trips_through_json():
@@ -8,26 +7,174 @@ def test_testplan_round_trips_through_json():
         source=Source(path="x.pdf", sha256="ab", generated_at="2026-09-21T00:00:00Z", model="m"),
         requirements=[Requirement(id="REQ-5.1-1", clause_id="5.1", text="The device shall respond.",
                                   modality="shall", conditions=[], source_quote="shall respond")],
-        test_cases=[TestCase(id="TC-REQ-5.1-1-1", requirement_id="REQ-5.1-1", kind="nominal",
-                             objective="o", preconditions=[], inputs=[], steps=["s"],
-                             expected_result="r", pass_criteria="p", condition_assignment=None)],
-        traceability=[TraceLink(requirement_id="REQ-5.1-1", test_case_ids=["TC-REQ-5.1-1-1"])],
-        gaps=[Gap(requirement_id=None, clause_id="5.2", stage="extract", reason="bad", attempts=3)],
+        objects=[TestObject(id="OBJ-5.1-1", clause_id="5.1", name="nonce", kind="parameter", direction="received",
+                            presence="mandatory", type="text string", source_quote="Name: nonce | Presence: mandatory",
+                            applies_when=["the device is in secure mode"])],
+        ics=[ICSItem(id="ICS-OBJ-5.1-1", source_id="OBJ-5.1-1", clause_id="5.1", feature="nonce", status="mandatory",
+                     condition=None, applies_when=["the device is in secure mode"])],
+        coverage_items=[CoverageItem(id="CI-OBJ-5.1-1-presence", source_id="OBJ-5.1-1", clause_id="5.1",
+                                     check="presence", kind="nominal", group="valid_behaviour",
+                                     purpose="Verify that nonce is present",
+                                     applies_when=["the device is in secure mode"], generic_group="nonce")],
+        test_cases=[TestCase(id="TC-CI-OBJ-5.1-1-presence", source_id="OBJ-5.1-1", coverage_item_id="CI-OBJ-5.1-1-presence",
+                             kind="nominal", objective="o", steps=["s"], expected_result="r", pass_criteria="p")],
+        traceability=[TraceLink(source_id="OBJ-5.1-1", coverage_item_ids=["CI-OBJ-5.1-1-presence"],
+                                test_case_ids=["TC-CI-OBJ-5.1-1-presence"])],
+        gaps=[Gap(source_id=None, clause_id="5.2", stage="model", reason="bad", attempts=3)],
     )
-    again = TestPlan.model_validate_json(plan.model_dump_json())
-    assert again == plan
+    assert TestPlan.model_validate_json(plan.model_dump_json()) == plan
+    assert list(plan.model_dump()) == ["source", "requirements", "objects", "ics", "coverage_items", "test_cases",
+                                       "traceability", "gaps"]
+    assert plan.objects[0].origin == "prose"
 
 
 def test_batch_schemas_are_json_schema_objects():
-    for batch in (RequirementBatch, TestCaseBatch):
-        schema = batch.model_json_schema()
-        assert schema["type"] == "object"
-        assert "properties" in schema
+    for batch in (RequirementBatch, TestObjectBatch):
+        assert batch.model_json_schema()["type"] == "object"
 
 
-def test_draft_defaults():
-    from tpg.models import RequirementDraft, TestCaseDraft
-    r = RequirementDraft(text="t", modality="may", source_quote="q")
-    assert r.conditions == []
-    t = TestCaseDraft(kind="nominal", objective="o", steps=["s"], expected_result="r", pass_criteria="p")
-    assert t.preconditions == [] and t.inputs == [] and t.condition_assignment is None
+def test_object_draft_defaults():
+    from tpg.models import TestObjectDraft
+    o = TestObjectDraft(name="n", kind="field", source_quote="q")
+    assert o.direction == "internal" and o.presence == "unspecified" and o.relations == [] and o.type is None
+    assert o.applies_when == []
+
+
+def test_applies_when_takes_the_same_lenient_list_coercion_as_the_other_list_fields():
+    from tpg.models import RequirementDraft, TestObjectDraft
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q", "applies_when": "profile X"})
+    assert o.applies_when == ["profile X"]
+    r = RequirementDraft.model_validate({"text": "t", "modality": "shall", "source_quote": "q", "applies_when": None})
+    assert r.applies_when == []
+    r2 = RequirementDraft.model_validate({"text": "t", "modality": "shall", "source_quote": "q",
+                                          "applies_when": ["a", 2, "  "]})
+    assert r2.applies_when == ["a", "2"]
+
+
+def test_origin_is_on_the_persisted_object_only_and_defaults_to_prose():
+    from tpg.models import TestObjectDraft
+    assert "origin" not in TestObjectDraft.model_fields
+    o = TestObject(id="OBJ-1-1", clause_id="1", name="n", kind="field", source_quote="q")
+    assert o.origin == "prose"
+    assert TestObject(id="OBJ-1-2", clause_id="1", name="n", kind="field", source_quote="q", origin="grammar").origin == "grammar"
+
+
+def test_requirement_batch_keeps_every_draft_when_one_modality_is_unknown():
+    """One out-of-vocabulary value must cost one draft, not the whole reply."""
+    batch = RequirementBatch.model_validate({"requirements": [
+        {"text": "a", "modality": "MUST NOT", "conditions": [], "source_quote": "q"},
+        {"text": "b", "modality": "obligatory", "conditions": [], "source_quote": "q"},
+    ]})
+    assert [r.modality for r in batch.requirements] == ["shall_not", "obligatory"]
+
+
+def test_object_batch_normalises_spelling_case_and_table_codes():
+    batch = TestObjectBatch.model_validate({"objects": [
+        {"name": "a", "kind": "Field", "direction": "Received", "presence": "M", "source_quote": "q"},
+        {"name": "b", "kind": "behavior", "direction": "produces output", "presence": "mandatory (M)", "source_quote": "q"},
+        {"name": "c", "kind": "parameters", "presence": "Ca", "condition": "x", "source_quote": "q"},
+        {"name": "d", "kind": "value", "presence": "O", "source_quote": "q"},
+        {"name": "e", "kind": "gadget", "presence": "sometimes", "source_quote": "q"},
+    ]})
+    assert [o.kind for o in batch.objects] == ["field", "behaviour", "parameter", "value", "gadget"]
+    assert [o.presence for o in batch.objects] == ["mandatory", "mandatory", "conditional", "optional", "sometimes"]
+    assert [o.direction for o in batch.objects][:2] == ["received", "produced"]
+
+
+def test_scalar_and_single_string_coercion_for_llm_fields():
+    from tpg.models import RequirementDraft, TestCaseDraft, TestObjectDraft
+    o = TestObjectDraft.model_validate({"name": 25, "kind": "value", "source_quote": "q",
+                                        "size": 150, "relations": "same value as x", "type": None, "value_domain": "  "})
+    assert o.name == "25" and o.size == "150" and o.relations == ["same value as x"]
+    assert o.type is None and o.value_domain is None
+    r = RequirementDraft.model_validate({"text": "t", "modality": "shall", "source_quote": "q", "conditions": "A is set"})
+    assert r.conditions == ["A is set"]
+    t = TestCaseDraft.model_validate({"objective": "o", "preconditions": None, "inputs": ["a", 2],
+                                      "steps": "send the request", "expected_result": "r", "pass_criteria": "p"})
+    assert t.preconditions == [] and t.inputs == ["a", "2"] and t.steps == ["send the request"]
+
+
+def test_persisted_types_normalise_but_stay_strict():
+    import pytest
+    from pydantic import ValidationError
+    o = TestObject(id="OBJ-1-1", clause_id="1", name="n", kind="Field", presence="M", source_quote="q")
+    assert o.kind == "field" and o.presence == "mandatory"
+    with pytest.raises(ValidationError):
+        TestObject(id="OBJ-1-2", clause_id="1", name="n", kind="gadget", source_quote="q")
+    with pytest.raises(ValidationError):
+        Requirement(id="REQ-1-1", clause_id="1", text="t", modality="obligatory", source_quote="q")
+
+
+def test_draft_schemas_still_advertise_their_vocabulary():
+    """Parsing is lenient, but a server that enforces the schema must still see the allowed values."""
+    from tpg.models import MODALITY_VALUES, OBJECT_KIND_VALUES, PRESENCE_VALUES
+    props = TestObjectBatch.model_json_schema()["$defs"]["TestObjectDraft"]["properties"]
+    assert props["kind"]["enum"] == list(OBJECT_KIND_VALUES)
+    assert props["presence"]["enum"] == list(PRESENCE_VALUES)
+    modality = RequirementBatch.model_json_schema()["$defs"]["RequirementDraft"]["properties"]["modality"]
+    assert modality["enum"] == list(MODALITY_VALUES)
+
+
+def test_negated_vocabulary_is_rejected_rather_than_flipped():
+    """Nothing downstream re-grounds presence, so a negated value must not be read as its opposite."""
+    from tpg.models import normalise_direction, normalise_object_kind, normalise_presence
+    for raw in ("not mandatory", "not required", "never optional", "not conditional"):
+        assert normalise_presence(raw) is None, raw
+    assert normalise_direction("not received") is None
+    assert normalise_object_kind("not a field") is None
+    assert normalise_presence("mandatory") == "mandatory" and normalise_direction("received") == "received"
+
+
+def test_unset_vocabulary_falls_back_to_the_declared_default():
+    """The prompt invites null for an attribute the text does not state; that must not cost the object."""
+    from tpg.models import TestObjectDraft
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q",
+                                        "presence": None, "direction": None})
+    assert o.presence == "unspecified" and o.direction == "internal"
+    missing = TestObjectDraft.model_validate({"name": "n", "kind": None, "source_quote": "q"})
+    assert missing.kind == ""
+    from tpg.models import RequirementDraft
+    assert RequirementDraft.model_validate({"text": "t", "modality": None, "source_quote": "q"}).modality == ""
+
+
+def test_presence_letter_codes_only_apply_to_a_lone_token():
+    from tpg.models import normalise_presence
+    assert normalise_presence("M") == "mandatory" and normalise_presence("Ca") == "conditional"
+    assert normalise_presence("on demand") is None and normalise_presence("see note c") is None
+
+
+def test_structured_values_keep_their_content_as_json_and_flags_are_unset():
+    from tpg.models import TestCaseDraft, TestObjectDraft
+    t = TestCaseDraft.model_validate({"objective": "o", "steps": [{"param": "nonce", "value": "abc"}],
+                                      "expected_result": "r", "pass_criteria": "p"})
+    assert t.steps == ['{"param": "nonce", "value": "abc"}']
+    o = TestObjectDraft.model_validate({"name": "n", "kind": "field", "source_quote": "q",
+                                        "type": False, "size": 0, "value_domain": {}})
+    assert o.type is None and o.size == "0" and o.value_domain == "{}"
+
+
+def test_requirement_name_defaults_to_empty_and_never_costs_the_requirement():
+    """D25 rule (b) already finds the object a requirement is about; `name` records it so a name-based
+    matcher can score requirement-derived items. It is a measurement aid: a missing or oddly typed
+    value must normalise, never reject the draft or its batch."""
+    from tpg.models import RequirementDraft
+    base = {"text": "t", "modality": "shall", "source_quote": "q"}
+    assert RequirementDraft(**base).name == ""
+    assert RequirementDraft.model_validate({**base, "name": None}).name == ""
+    assert RequirementDraft.model_validate({**base, "name": "  nonce  "}).name == "nonce"
+    assert RequirementDraft.model_validate({**base, "name": ["docType", "nonce"]}).name == "docType"
+    assert RequirementDraft.model_validate({**base, "name": 7}).name == "7"
+    assert RequirementDraft.model_validate({**base, "name": True}).name == ""
+    assert RequirementDraft.model_validate({**base, "name": []}).name == ""
+
+
+def test_requirement_batch_schema_advertises_the_name_field():
+    props = RequirementBatch.model_json_schema()["$defs"]["RequirementDraft"]["properties"]
+    assert props["name"]["type"] == "string"
+    assert list(props)[-1] == "name"          # appended, so the prompt's field order is unchanged
+
+
+def test_requirement_name_reaches_the_persisted_requirement():
+    r = Requirement(id="REQ-5.1-1", clause_id="5.1", text="The device shall respond.", modality="shall",
+                    source_quote="shall respond", name="response code")
+    assert r.model_dump()["name"] == "response code"

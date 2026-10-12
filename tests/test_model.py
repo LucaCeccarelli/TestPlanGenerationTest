@@ -1,0 +1,223 @@
+from tpg.extract import chunks
+from tpg.grammar import harvest
+from tpg.llm import LLMError
+from tpg.model import (assemble, build_model_prompt, check_object, extract_objects, extract_objects_clause,
+                       has_rows, merge_objects)
+from tpg.models import Clause, TestObjectDraft
+
+CLAUSE = Clause(id="5.4", title="Request parameters",
+                text="The request contains the following parameters.\nName: nonce | Presence: mandatory | Type: text string of 16 to 64 characters\n"
+                     "Name: locale | Presence: optional | Type: BCP 47 language tag\nThe reader shall reject a request whose nonce is missing.")
+NONCE = {"name": "nonce", "kind": "parameter", "direction": "received", "presence": "mandatory",
+         "type": "text string of 16 to 64 characters", "size": "16 to 64 characters",
+         "source_quote": "Name: nonce | Presence: mandatory | Type: text string of 16 to 64 characters"}
+LOCALE = {"name": "locale", "kind": "parameter", "direction": "received", "presence": "optional", "type": "BCP 47 language tag",
+          "source_quote": "Name: locale | Presence: optional | Type: BCP 47 language tag"}
+
+
+def test_has_rows():
+    assert has_rows("Name: nonce | Presence: mandatory") and not has_rows("plain prose: with colon") and not has_rows("a | b")
+
+
+def test_prompt_asks_for_applies_when():
+    p = build_model_prompt(CLAUSE, CLAUSE.text, "1/1", [], [])
+    assert p.count("applies_when") == 2          # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "applies_when"'))
+    assert "quote" in rule.lower() and "empty" in rule
+
+
+def test_check_object_rules():
+    assert check_object(CLAUSE, 1, TestObjectDraft(**NONCE)) is None
+    assert "verbatim" in check_object(CLAUSE, 1, TestObjectDraft(**{**NONCE, "source_quote": "not there"}))
+    assert "name" in check_object(CLAUSE, 1, TestObjectDraft(**{**NONCE, "name": " "}))
+    assert "condition" in check_object(CLAUSE, 1, TestObjectDraft(**{**NONCE, "presence": "conditional"}))
+    assert "condition" in check_object(CLAUSE, 1, TestObjectDraft(**{**NONCE, "condition": "when asked"}))
+
+
+def test_merge_objects_fills_nulls_of_first_occurrence():
+    a = TestObjectDraft(**{**NONCE, "type": None})
+    b = TestObjectDraft(**{**NONCE, "name": "Nonce", "presence": "unspecified"})
+    merged = merge_objects([a, b])
+    assert len(merged) == 1 and merged[0].name == "nonce" and merged[0].type == NONCE["type"] and merged[0].presence == "mandatory"
+
+
+def test_extract_objects_clause_assigns_ids_in_source_order(fake_llm):
+    objs, gap = extract_objects_clause(CLAUSE, fake_llm([{"objects": [LOCALE, NONCE]}]))
+    assert gap is None and [o.id for o in objs] == ["OBJ-5.4-1", "OBJ-5.4-2"] and objs[0].name == "nonce"
+
+
+def test_extract_objects_clause_retries_invalid_and_keeps_valid(fake_llm):
+    bad = {**LOCALE, "source_quote": "nope"}
+    llm = fake_llm([{"objects": [NONCE, bad]}, LLMError("bad json"), {"objects": [bad]}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert [o.name for o in objs] == ["nonce"]
+    assert gap is not None and gap.stage == "model" and gap.source_id is None and "nope" in gap.reason
+    assert len(llm.prompts) == 3 and "bad json" in llm.prompts[2] and "nonce" in llm.prompts[1]
+
+
+def test_extract_objects_clause_reemitted_object_does_not_resolve_failure(fake_llm):
+    bad = {**LOCALE, "source_quote": "nope"}
+    llm = fake_llm([{"objects": [NONCE, bad]}, {"objects": [NONCE]}, {"objects": [NONCE]}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert [o.name for o in objs] == ["nonce"] and gap is not None and "nope" in gap.reason and len(llm.prompts) == 3
+
+
+def test_extract_objects_clause_empty_retry_keeps_failure_open(fake_llm):
+    bad = {**LOCALE, "source_quote": "nope"}
+    llm = fake_llm([{"objects": [bad]}, {"objects": []}, {"objects": []}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert objs == [] and gap is not None and gap.attempts == 3 and "nope" in gap.reason and len(llm.prompts) == 3
+
+
+def test_extract_objects_skips_clauses_without_candidates_or_rows(fake_llm):
+    prose = Clause(id="1", title="Scope", text="This document describes things.")
+    rows_only = Clause(id="2", title="Codes", text="Code: 01 | Meaning: car\nCode: 03 | Meaning: truck")
+    llm = fake_llm([{"objects": []}, {"objects": [NONCE]}])
+    objs, gaps = extract_objects([prose, rows_only, CLAUSE], llm)
+    assert len(llm.prompts) == 2 and [o.id for o in objs] == ["OBJ-5.4-1"] and gaps == []
+
+
+def test_check_object_rejects_unrecognised_enum_values():
+    assert "kind" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "kind": "gadget"}))
+    assert "presence" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "presence": "sometimes"}))
+    assert "direction" in check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "direction": "sideways"}))
+    assert check_object(CLAUSE, 1, TestObjectDraft.model_validate({**NONCE, "presence": "M"})) is None
+
+
+def test_extract_objects_clause_survives_one_unrecognised_enum(fake_llm):
+    bad = {**LOCALE, "kind": "gadget"}
+    llm = fake_llm([{"objects": [NONCE, bad]}, {"objects": []}, {"objects": []}])
+    objs, gap = extract_objects_clause(CLAUSE, llm)
+    assert [o.name for o in objs] == ["nonce"]
+    assert gap is not None and "gadget" in gap.reason and len(llm.prompts) == 3
+
+
+ROWS = [f"Name: p{i} | Presence: optional" for i in range(5)]
+ROW_CLAUSE = Clause(id="9", title="Rows", text="\n".join(ROWS), row_count=5)
+
+
+def _row_obj(i):
+    return {"name": f"p{i}", "kind": "parameter", "direction": "received", "presence": "optional", "source_quote": ROWS[i]}
+
+
+def test_extract_objects_clause_reprompts_for_missing_rows(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}, {"objects": [_row_obj(2)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 3 and gap is not None and gap.stage == "model" and "3/5 rows" in gap.reason
+    assert ROWS[2] in llm.prompts[1] and ROWS[0] not in llm.prompts[1] and len(llm.prompts) == 4
+
+
+def test_extract_objects_clause_missing_rows_gap_counts(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 2 and "2/5 rows" in gap.reason
+
+
+def test_extract_objects_clause_no_gap_when_rows_recovered(fake_llm):
+    llm = fake_llm([{"objects": [_row_obj(0)]}, {"objects": [_row_obj(i) for i in range(1, 5)]}])
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 5 and gap is None and len(llm.prompts) == 2
+
+
+def test_extract_objects_clause_duplicate_quotes_do_not_hide_uncovered_row(fake_llm):
+    dup = {**_row_obj(0), "name": "p0 again"}
+    llm = fake_llm([{"objects": [_row_obj(0), dup, _row_obj(1)]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert len(objs) == 3 and gap is not None and "2/5 rows" in gap.reason
+
+
+def test_extract_objects_clause_recovery_failures_reach_gap_reason(fake_llm):
+    bad = {**_row_obj(2), "source_quote": "nowhere"}
+    llm = fake_llm([{"objects": [_row_obj(0), _row_obj(1)]}, {"objects": [bad]}], fallback={"objects": []})
+    objs, gap = extract_objects_clause(ROW_CLAUSE, llm)
+    assert "2/5 rows" in gap.reason and "nowhere" in gap.reason
+
+
+def test_extract_objects_clause_recovery_prompt_is_chunked(fake_llm):
+    rows = [f"Name: p{i} | Presence: optional | Note: " + "x" * 400 for i in range(20)]
+    clause = Clause(id="9", title="Rows", text="\n".join(rows), row_count=20)
+    llm = fake_llm([], fallback={"objects": []})
+    extract_objects_clause(clause, llm, attempts=1)
+    main = len(chunks(clause.text))
+    assert len(llm.prompts) == 2 * main and all(len(p) < 3000 + 4000 for p in llm.prompts)
+
+
+DECL = Clause(id="7", title="Declarations", text="record = {\nlabel: tstr,\n}")
+DECL_PROSE = Clause(id="7", title="Declarations", text=DECL.text + "\nThe label shall be unique within a record.")
+
+
+def test_grammar_drafts_are_kept_and_tagged_grammar(fake_llm):
+    llm = fake_llm([])          # no candidates and no rows: the LLM must not be called at all
+    objs, gap = extract_objects_clause(DECL, llm, grammar=harvest(DECL))
+    assert gap is None and llm.prompts == []
+    assert [(o.id, o.name, o.origin, o.type) for o in objs] == [
+        ("OBJ-7-1", "record", "grammar", "map"), ("OBJ-7-2", "label", "grammar", "tstr")]
+
+
+def test_prose_fills_an_attribute_the_grammar_left_unset(fake_llm):
+    prose = {"name": "label", "kind": "field", "direction": "received", "presence": "mandatory",
+             "value_domain": "unique within a record", "source_quote": "label: tstr,"}
+    objs, gap = extract_objects_clause(DECL_PROSE, fake_llm([{"objects": [prose]}]), grammar=harvest(DECL_PROSE))
+    assert gap is None and [o.name for o in objs] == ["record", "label"]
+    o = objs[1]
+    assert (o.origin, o.type, o.direction, o.value_domain) == ("grammar", "tstr", "received", "unique within a record")
+
+
+def test_grammar_names_reach_the_model_prompt(fake_llm):
+    llm = fake_llm([{"objects": []}])
+    extract_objects_clause(DECL_PROSE, llm, grammar=harvest(DECL_PROSE))
+    assert "already" in llm.prompts[0] and "- label" in llm.prompts[0]
+
+
+def test_extract_objects_includes_a_clause_that_only_declares_a_structure(fake_llm):
+    llm = fake_llm([])
+    objs, gaps = extract_objects([DECL], llm, grammar={"7": harvest(DECL)})
+    assert gaps == [] and llm.prompts == []
+    assert [(o.name, o.origin) for o in objs] == [("record", "grammar"), ("label", "grammar")]
+
+
+TWO = Clause(id="8", title="Two structures",
+             text="first = {\nitem: tstr,\n}\nsecond = {\nitem: uint,\n}\nThe item shall be unique.")
+PROSE_ITEM = {"name": "item", "kind": "field", "direction": "received", "presence": "mandatory",
+              "value_domain": "unique", "source_quote": "The item shall be unique."}
+
+
+def test_two_structures_declaring_the_same_member_stay_two_objects():
+    """The member of one structure is not the member of another, even under the same name."""
+    objs = assemble(TWO, harvest(TWO), [])
+    assert [(o.name, o.type, o.relations) for o in objs] == [("first", "map", []),
+                                                             ("item", "tstr", ["member of first"]),
+                                                             ("second", "map", []),
+                                                             ("item", "uint", ["member of second"])]
+
+
+def test_prose_does_not_fill_a_grammar_name_that_is_ambiguous_in_the_clause():
+    """Which of the two declared members the sentence means is unknown, so it stays its own object."""
+    objs = assemble(TWO, harvest(TWO), [TestObjectDraft(**PROSE_ITEM)])
+    assert [(o.name, o.origin, o.value_domain) for o in objs] == [
+        ("first", "grammar", None), ("item", "grammar", None), ("second", "grammar", None),
+        ("item", "grammar", None), ("item", "prose", "unique")]
+
+
+DECL_OTHER = Clause(id="7", title="Declarations", text=DECL.text + "\nThe status shall be reported.")
+
+
+def test_a_prose_object_of_another_name_joins_the_declaration():
+    prose = TestObjectDraft(name="status", kind="field", direction="produced", presence="mandatory",
+                            source_quote="The status shall be reported.")
+    objs = assemble(DECL_OTHER, harvest(DECL_OTHER), [prose])
+    assert [(o.id, o.name, o.origin) for o in objs] == [("OBJ-7-1", "record", "grammar"),
+                                                        ("OBJ-7-2", "label", "grammar"),
+                                                        ("OBJ-7-3", "status", "prose")]
+
+
+def test_assemble_sorts_an_ungrounded_quote_last_instead_of_raising():
+    ghost = TestObjectDraft(name="ghost", kind="field", direction="internal", presence="unspecified",
+                            source_quote="this sentence is not in the clause")
+    assert [o.name for o in assemble(DECL, harvest(DECL), [ghost])] == ["record", "label", "ghost"]
+
+
+def test_merge_objects_fills_applies_when():
+    a = TestObjectDraft(**NONCE)
+    b = TestObjectDraft(**{**NONCE, "applies_when": ["when the reader supports it"]})
+    assert merge_objects([a, b])[0].applies_when == ["when the reader supports it"]

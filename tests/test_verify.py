@@ -1,17 +1,13 @@
-from tpg.models import Requirement, TestCaseDraft
-from tpg.verify import check_test_cases, required_assignments
-
-REQ = Requirement(id="REQ-5.1-1", clause_id="5.1", text="The device shall respond within 500 ms.",
-                  modality="shall", conditions=[], source_quote="shall respond within 500 ms")
-COND_REQ = Requirement(id="REQ-5.2-1", clause_id="5.2",
-                       text="If A or B, the device shall not process the request.", modality="shall_not",
-                       conditions=["A", "B"], source_quote="shall not process the request")
+from tpg.models import CoverageItem, TestCaseDraft
+from tpg.verify import check_test_case, required_assignments
 
 
-def tc(kind="nominal", steps=("Send a request",), expected="Response within 500 ms", assignment=None, **kw):
-    return TestCaseDraft(kind=kind, objective=kw.get("objective", "obj"), steps=list(steps),
-                         expected_result=expected, pass_criteria=kw.get("pass_criteria", "pc"),
-                         condition_assignment=assignment)
+def item(check="presence", kind="nominal"):
+    return CoverageItem(id="CI-x", source_id="OBJ-1", clause_id="1", check=check, kind=kind, group="valid_behaviour", purpose="p")
+
+
+def draft(steps=("Send a request",), expected="Response within 500 ms", pc="pc"):
+    return TestCaseDraft(objective="o", steps=list(steps), expected_result=expected, pass_criteria=pc)
 
 
 def test_required_assignments():
@@ -19,51 +15,77 @@ def test_required_assignments():
     assert required_assignments(["A", "B"]) == [{"A": True, "B": True}, {"A": False, "B": True}, {"A": True, "B": False}]
 
 
-def test_ok_unconditional_shall():
-    assert check_test_cases(REQ, [tc(), tc("negative", expected="Error"), tc("boundary", expected="Exactly 500 ms ok")]) == []
+def test_ok_nominal():
+    assert check_test_case(item(), draft()) == []
 
 
-def test_exactly_one_nominal():
-    assert any("nominal" in m for m in check_test_cases(REQ, [tc("negative", expected="e")]))
-    assert any("nominal" in m for m in check_test_cases(REQ, [tc(), tc(), tc("negative", expected="e")]))
+def test_field_rules():
+    assert any("steps" in m for m in check_test_case(item(), draft(steps=(" ",))))
+    assert any("expected_result" in m for m in check_test_case(item(), draft(expected=" ")))
+    assert any("expected_result" in m and "steps" in m for m in check_test_case(item(), draft(steps=("Same",), expected="Same")))
+    assert any("pass_criteria" in m for m in check_test_case(item(), draft(pc=" ")))
 
 
-def test_shall_needs_negative():
-    msgs = check_test_cases(REQ, [tc()])
-    assert any("negative" in m for m in msgs)
+def test_negative_items_need_a_rejection_style_expected_result():
+    neg = item("absence", "negative")
+    assert any("reject" in m for m in check_test_case(neg, draft(expected="The response is accepted")))
+    assert check_test_case(neg, draft(expected="The request is rejected with an error")) == []
+    assert check_test_case(neg, draft(expected="Nothing happens", pc="The obligation's effect is absent")) == []
+    assert any("reject" in m for m in check_test_case(neg, draft(expected="The device returns the response and no error is raised")))
+    assert check_test_case(neg, draft(expected="The device drops the request silently")) == []
+    assert check_test_case(neg, draft(expected="Nothing is returned")) == []
 
 
-def test_may_does_not_need_negative():
-    may = REQ.model_copy(update={"modality": "may"})
-    assert check_test_cases(may, [tc()]) == []
+def test_boundary_items_are_not_negative():
+    assert check_test_case(item("boundary_max", "boundary"), draft(expected="Accepted at exactly 64 characters")) == []
 
 
-def test_empty_steps_and_results():
-    msgs = check_test_cases(REQ, [tc(steps=()), tc("negative", expected="")])
-    assert any("steps" in m for m in msgs) and any("expected_result" in m for m in msgs)
+def test_empty_objective_is_reported():
+    d = TestCaseDraft.model_validate({"objective": None, "steps": ["s"], "expected_result": "r", "pass_criteria": "p"})
+    assert any("objective" in m for m in check_test_case(item(), d))
 
 
-def test_expected_result_must_differ_from_steps():
-    msgs = check_test_cases(REQ, [tc(steps=("Same",), expected="Same"), tc("negative", expected="e")])
-    assert any("expected_result" in m and "steps" in m for m in msgs)
+# --- the two wordings D30 gives a negative purpose, each with a plausible generated case (task 17) ---
+
+RECEIVED_PURPOSE = "Verify the reaction of the system under test when nonce is not a well-formed text string"
+PRODUCED_PURPOSE = ("Verify that the system under test never produces or holds a case in which nonce is not a "
+                    "well-formed text string")
 
 
-def test_empty_pass_criteria():
-    msgs = check_test_cases(REQ, [tc(pass_criteria=" "), tc("negative", expected="e")])
-    assert any("pass_criteria" in m for m in msgs)
+def case(**kw):
+    base = dict(objective="o", preconditions=["a session is open"], inputs=["i"], steps=["s"],
+                expected_result="e", pass_criteria="p")
+    return TestCaseDraft(**{**base, **kw})
 
 
-def test_conditional_requires_exact_assignment_set():
-    ok = [tc(assignment={"A": True, "B": True}),
-          tc("negative", expected="rejected", assignment={"A": False, "B": True}),
-          tc("negative", expected="rejected", assignment={"A": True, "B": False})]
-    assert check_test_cases(COND_REQ, ok) == []
-    missing = ok[:2]
-    assert any("condition_assignment" in m for m in check_test_cases(COND_REQ, missing))
-    wrong = ok[:2] + [tc("negative", expected="rejected", assignment={"A": False, "B": False})]
-    assert any("condition_assignment" in m for m in check_test_cases(COND_REQ, wrong))
+def negative():
+    return CoverageItem(id="CI-OBJ-1-encoding_invalid", source_id="OBJ-1", clause_id="1", check="encoding_invalid",
+                        kind="negative", group="invalid_behaviour", purpose=PRODUCED_PURPOSE)
 
 
-def test_unconditional_case_with_assignment_is_rejected():
-    msgs = check_test_cases(REQ, [tc(assignment={"A": True}), tc("negative", expected="e")])
-    assert any("condition_assignment" in m for m in msgs)
+def test_a_negative_case_may_observe_a_rejection():
+    """The received wording: an invalid instance is supplied and the system under test rejects it."""
+    d = case(objective="Supply a malformed nonce and observe the reader's reaction",
+             inputs=["a nonce encoded as an integer instead of a text string"],
+             steps=["Send the request carrying the malformed nonce"],
+             expected_result="The reader rejects the request and returns an error",
+             pass_criteria="The case passes if the request is rejected and no response is returned")
+    assert check_test_case(negative(), d) == []
+
+
+def test_a_negative_case_may_observe_that_nothing_invalid_is_ever_produced():
+    """The produced or internal wording, which 83 per cent of real objects carry: nothing is supplied and
+    the observation is over every instance the system under test makes."""
+    d = case(objective="Observe that every nonce the device emits is well-formed",
+             steps=["Capture 50 consecutive responses", "Decode the nonce of each"],
+             expected_result="Every nonce emitted is a well-formed text string; no malformed nonce is ever observed",
+             pass_criteria="The case passes if no malformed nonce is observed in any captured response")
+    assert check_test_case(negative(), d) == []
+
+
+def test_a_negative_case_may_not_assert_an_absence_of_obligation():
+    """The case that distinguishes the two accepted outcomes from what the gate excludes: nothing is
+    observed at all, only that the specification asks for nothing."""
+    d = case(expected_result="The nonce is not required by the specification, so the device need not emit one",
+             pass_criteria="The case passes if the nonce is not mandatory for this profile")
+    assert any("outcome" in m for m in check_test_case(negative(), d))

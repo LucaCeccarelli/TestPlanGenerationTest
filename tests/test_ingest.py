@@ -1,8 +1,10 @@
+import re
+import warnings
 from pathlib import Path
 
 import pytest
 
-from tpg.ingest import ingest, segment
+from tpg.ingest import CONTROL, follows, ingest, segment, strip_repeated, table_rows
 
 FIX = Path(__file__).parent / "fixtures"
 
@@ -11,12 +13,19 @@ FIX = Path(__file__).parent / "fixtures"
 def test_sample_segments_into_known_clauses(name):
     clauses = ingest(str(FIX / name))
     ids = [c.id for c in clauses]
-    assert ["1", "5.1", "5.2", "5.3"] == [i for i in ids if i in ("1", "5.1", "5.2", "5.3")]
+    expected = ["1", "5.1", "5.2", "5.3", "5.4", "5.5"]
+    assert expected == [i for i in ids if i in set(expected)]
     c51 = next(c for c in clauses if c.id == "5.1")
     assert c51.title == "Response time"
     assert "within 500 ms" in c51.text
     c52 = next(c for c in clauses if c.id == "5.2")
     assert "shall not process" in c52.text
+    assert "Name: nonce | Presence: mandatory" in next(c for c in clauses if c.id == "5.4").text
+    # the formal declarations of 5.5 survive as plain lines in every format, which the grammar stage reads
+    c55 = next(c for c in clauses if c.id == "5.5")
+    for line in ("label: tstr .size (1..32),", "token = prefix 1*8ALPHA [ suffix ]",
+                 '"key": {"type": "string", "minLength": 4, "maxLength": 16},', "name UTF8String (SIZE(1..64)),"):
+        assert line in c55.text, f"{name}: {line!r} missing from clause 5.5"
 
 
 def test_html_ignores_script():
@@ -53,17 +62,42 @@ def test_long_line_is_not_a_heading():
 
 
 def test_openid_pdf_has_expected_clauses():
-    ids = {c.id for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
+    clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
+    ids = {c.id for c in clauses}
     assert {"5", "5.1", "5.2"} <= ids
+    assert {"9", "10", "11", "12", "13"} <= ids
+    assert max(len(c.text) for c in clauses) < 60000
 
 
 def test_duplicate_ids_are_unique_after_segmentation():
-    pages = ["5.1 New Parameters\n5.2 Existing Parameters\n5.1 New Parameters\nThe wallet shall accept them.\n9 Response\nBody A.\n9 Response\nBody B."]
+    pages = ["1 New Parameters\n1 New Parameters\nText A.\n2 Other\nBody other.\n1 New Parameters\nText B."]
     clauses = segment(pages)
     ids = [c.id for c in clauses]
     assert len(ids) == len(set(ids))
-    assert ids == ["5.2", "5.1", "9", "9#2"]
-    assert next(c for c in clauses if c.id == "5.1").text.startswith("The wallet")
+    assert ids == ["1", "2", "1#2"]
+    assert next(c for c in clauses if c.id == "1").text == "Text A."
+
+
+def test_fullest_duplicate_keeps_bare_id():
+    # a bare-id transition backward (5.7 -> 5.8 -> 5.7) is rejected by follows(); a ToC-then-body
+    # duplicate reaches the same id again only via the "1" restart, as real ToCs do.
+    pages = ["5.7 Title\nshort\n7 Other\nx\n1 Intro\n3 More\n5 Overview\n"
+             "5.1 Sub\nBody one.\n5.3 Sub2\nBody three.\n5.5 Sub3\nBody five.\n"
+             "5.7 Title\nThe unit shall do the long real thing here.\n5.9 Next\ny"]
+    clauses = segment(pages)
+    by_id = {c.id: c for c in clauses}
+    assert by_id["5.7"].text.startswith("The unit shall") and by_id["5.7#2"].text == "short"
+
+
+def test_openid_real_clauses_keep_bare_ids():
+    # Every table-of-contents entry is now followed by the next entry, so each ToC clause is
+    # empty and _dedupe_ids drops it; what survives under the bare id is the body clause.
+    clauses = ingest(str(FIX / "OpenID4VP1-0.pdf"))
+    by_id = {c.id: c for c in clauses}
+    assert len(by_id["5.7"].text) > 200
+    for c in clauses:
+        if "#" in c.id:
+            assert len(by_id[c.id.split("#")[0]].text) >= len(c.text)
 
 
 def test_openid_pdf_ids_are_unique():
@@ -90,15 +124,15 @@ def test_docx_tables_stay_in_document_order(tmp_path):
     from docx import Document
     doc = Document()
     doc.add_paragraph("5.1 First")
-    t = doc.add_table(rows=1, cols=2)
-    t.rows[0].cells[0].text = "The unit shall log"
-    t.rows[0].cells[1].text = "events"
+    t = doc.add_table(rows=2, cols=2)
+    t.rows[0].cells[0].text, t.rows[0].cells[1].text = "Item", "Value"
+    t.rows[1].cells[0].text, t.rows[1].cells[1].text = "The unit shall log", "events"
     doc.add_paragraph("5.2 Second")
     doc.add_paragraph("Body two.")
     p = tmp_path / "t.docx"
     doc.save(str(p))
     clauses = ingest(str(p))
-    assert "shall log | events" in next(c for c in clauses if c.id == "5.1").text
+    assert "Item: The unit shall log | Value: events" in next(c for c in clauses if c.id == "5.1").text
     assert "shall log" not in next(c for c in clauses if c.id == "5.2").text
 
 
@@ -107,7 +141,337 @@ def test_rfc_pdf_falls_back_to_pages():
     assert clauses[0].id == "p1" and len(clauses) > 50
 
 
+def _warnings_of(call):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = call()
+    return result, [str(w.message) for w in caught]
+
+
+def test_page_fallback_on_a_long_document_is_reported():
+    """One clause per page means no clause structure reached any later stage. On a document long
+    enough for that to be an extraction failure rather than its shape, ingest says so."""
+    clauses, msgs = _warnings_of(lambda: segment([f"body text of page {n}" for n in range(1, 7)]))
+    assert [c.id for c in clauses] == [f"p{n}" for n in range(1, 7)]
+    assert any("no clause heading" in m for m in msgs), msgs
+
+
+def test_short_heading_free_document_is_not_reported():
+    """A handful of pages with no numbering is a plausible document shape, not a defect: stay quiet
+    so the report means something when it does appear."""
+    _, msgs = _warnings_of(lambda: segment(["first page text", "second page text"]))
+    assert msgs == []
+
+
+def test_rfc_pdf_does_not_lose_its_structure_silently():
+    """RFC8949.pdf was printed to PDF by a browser that converted every bold run - which is every
+    heading - to filled vector outlines. Those carry no character code at all, so no extractor can
+    read them and the clause structure is unrecoverable. Ingest must report that rather than hand
+    later stages 77 page-sized clauses as if they were clauses."""
+    clauses, msgs = _warnings_of(lambda: ingest(str(FIX / "RFC8949.pdf")))
+    if any(not re.fullmatch(r"p\d+", c.id) for c in clauses):
+        return  # headings became readable: nothing to report
+    assert any("no clause heading" in m for m in msgs), msgs
+
+
 @pytest.mark.skipif(not (FIX / "iso_18013_5.pdf").exists(), reason="ISO fixture not distributed")
 def test_iso_pdf_has_expected_clauses():
     ids = {c.id for c in ingest(str(FIX / "iso_18013_5.pdf"))}
     assert {"1", "6.1", "8.1", "8.1.1"} <= ids
+
+
+def test_strip_repeated_removes_running_headers_and_page_numbers():
+    pages = [f"Spec v1.0\nBody {i}\nmore text {i}\nPage {i} of 4" for i in range(1, 5)]
+    out = strip_repeated(pages)
+    assert out[0] == "Body 1\nmore text 1"
+    assert all("Spec v1.0" not in p and "Page" not in p for p in out)
+
+
+def test_strip_repeated_keeps_short_documents_and_mid_page_lines():
+    pages = ["Spec v1.0\nBody\nSpec v1.0 again mid", "Spec v1.0\nOther"]
+    assert strip_repeated(pages) == pages
+    four = ["Spec\n" + "\n".join(f"line {j}" for j in range(10)) + "\nTable 3 caption\nend"] * 4
+    assert all("Table 3 caption" in p for p in strip_repeated(four))
+
+
+def test_control_characters_do_not_hide_repeated_footers():
+    pages = [f"Body {i}\nline a\nline b\nline c\nline d\n(c) Publisher 2020 - All rights reserved{chr(8) if i % 2 else ''}\n{i}" for i in range(1, 7)]
+    out = strip_repeated([p.translate(CONTROL) for p in pages])
+    assert all("All rights reserved" not in p for p in out)
+
+
+def test_iso_pdf_has_no_footer_inside_clauses():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    clauses = ingest(str(FIX / "iso_18013_5.pdf"))
+    hits = sum(c.text.count("All rights reserved") for c in clauses)
+    assert hits <= 2, hits
+    assert len(clauses) >= 250
+
+
+def test_table_rows_format_and_merged_first_cell():
+    rows = [["Name", "Presence", "Type"], ["nonce", "M", "text"], ["", "O", "int"], ["", "", ""]]
+    assert table_rows(rows) == "Name: nonce | Presence: M | Type: text\nName: nonce | Presence: O | Type: int"
+
+
+def test_single_row_table_keeps_its_text(tmp_path):
+    md = tmp_path / "t.md"
+    md.write_text("## 5.4 Note\n\n| The unit shall log every event. | see 5.1 |\n")
+    assert "The unit shall log every event. | see 5.1" in ingest(str(md))[0].text
+
+
+def test_follows_sequence_rules():
+    assert follows(None, "1") and follows("1", "2") and follows("1", "1.1") and follows("1.1", "1.2")
+    assert follows("7.4.9", "7.5") and follows("7.4.9", "8") and follows("1.1", "1.3")  # one missed heading tolerated
+    assert follows("8", "8.1") and not follows("8", "8.1.2") and not follows("1.1", "1.5")
+    assert follows("B.2", "B.3") and follows("B", "B.1") and follows("A.3.4", "B") and not follows("B.2", "5.2")
+    assert follows("9.3.2", "A") and follows("11", "A") and not follows("E.2.2", "10") and not follows("17", "8949")
+    assert follows("5", "6.1") and follows("7.2", "7.3.1")
+    assert follows("9", "1") and follows("C.3", "1", prev_empty=True) and not follows("8.6", "1")
+    assert not follows("8.6", "1", prev_empty=False)
+
+
+def test_letter_prefixed_and_annex_headings():
+    clauses = segment(["1 Scope\nBody.\nAnnex A Use cases\nIntro.\nA.1 General\nThe unit shall log.\nA.2 Cases\nMore."])
+    assert [c.id for c in clauses] == ["1", "A", "A.1", "A.2"]
+    assert clauses[1].title == "Use cases"
+
+
+def test_table_cell_number_is_not_a_heading():
+    clauses = segment(["B.1 Extensions\nAuthority Key Identifier\n5.2 Further extensions shall not be present\nCRL Number\nB.2 Next\nBody."])
+    assert [c.id for c in clauses] == ["B.1", "B.2"]
+    assert "5.2 Further extensions" in clauses[0].text
+
+
+def test_lowercase_title_is_accepted_from_its_own_line_and_inline():
+    # Both layouts of a lowercase clause title are headings: the number alone on a line with the
+    # title on the next, and the number space separated from the title on one line.
+    clauses = segment(["7.3.2\t\nnameSpace\nThe nameSpace shall be text.\n7.3.3 mDL data\nBody."])
+    assert [(c.id, c.title) for c in clauses] == [("7.3.2", "nameSpace"), ("7.3.3", "mDL data")]
+
+
+def test_soft_hyphens_are_removed():
+    clauses = segment(["5.1 Codes\nThe first part of the code shall be the same as issu\u00ading_country."])
+    assert "issuing_country" in clauses[0].text
+
+
+def test_markdown_pipe_table_becomes_row_records(tmp_path):
+    md = tmp_path / "t.md"
+    md.write_text("## 5.4 Parameters\n\n| Name | Presence | Type |\n|---|---|---|\n| nonce | mandatory | text string |\n| locale | optional | language tag |\n")
+    c = ingest(str(md))[0]
+    assert "Name: nonce | Presence: mandatory | Type: text string" in c.text
+    assert "Name: locale | Presence: optional | Type: language tag" in c.text
+    assert "|---" not in c.text
+
+
+def test_html_table_becomes_row_records(tmp_path):
+    h = tmp_path / "t.html"
+    h.write_text("<h2>5.4 Parameters</h2><table><tr><th>Name</th><th>Presence</th></tr><tr><td>nonce</td><td>mandatory</td></tr></table>")
+    c = ingest(str(h))[0]
+    assert "Name: nonce | Presence: mandatory" in c.text
+
+
+def test_docx_table_becomes_row_records_with_headers(tmp_path):
+    from docx import Document
+    doc = Document()
+    doc.add_paragraph("5.4 Parameters")
+    t = doc.add_table(rows=2, cols=2)
+    t.rows[0].cells[0].text, t.rows[0].cells[1].text = "Name", "Presence"
+    t.rows[1].cells[0].text, t.rows[1].cells[1].text = "nonce", "mandatory"
+    p = tmp_path / "t.docx"
+    doc.save(str(p))
+    c = next(c for c in ingest(str(p)) if c.id == "5.4")
+    assert "Name: nonce | Presence: mandatory" in c.text
+
+
+def test_iso_pdf_finds_lowercase_titled_and_annex_clauses():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    clauses = {c.id: c for c in ingest(str(FIX / "iso_18013_5.pdf"))}
+    assert {"7.3.3", "A.1", "8.2.1.1.2.1"} <= set(clauses)
+    assert max(len(c.text) for c in clauses.values()) < 60000
+    assert "Reference:" in "".join(c.text for c in clauses.values())   # a table row record survived
+
+
+def test_pdf_pages_have_no_running_headers():
+    text = "\n".join(c.text for c in ingest(str(FIX / "OpenID4VP1-0.pdf")))
+    assert " of 96" not in text
+
+
+def test_segment_counts_row_records():
+    got = segment(["1 Scope\nIntro text.\n2 Rows\nName: a | Type: x\nName: b | Type: y\n"])
+    assert [c.row_count for c in got] == [0, 2]
+
+
+def test_iso_741_has_33_rows():
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    assert next(c for c in ingest(str(FIX / "iso_18013_5.pdf")) if c.id == "7.4.1").row_count == 33
+
+
+def test_inline_dotted_heading_accepts_lowercase_identifier_title():
+    """A clause title is often a lowercase protocol identifier. Printed on one line, space
+    separated from a multi-level number, it is still a heading."""
+    clauses = segment(["5.7 Passing requests\nBody.\n5.8. aud of a Request Object\nThe aud shall match.\n"
+                       "5.9 Prefixes\nBody.\n5.9.1 vp_token\nThe token shall be present."])
+    assert [(c.id, c.title) for c in clauses] == [
+        ("5.7", "Passing requests"), ("5.8", "aud of a Request Object"),
+        ("5.9", "Prefixes"), ("5.9.1", "vp_token")]
+
+
+def test_inline_lowercase_title_with_sentence_punctuation_is_not_a_heading():
+    """A wrapped prose line that opens with a cross-reference carries sentence punctuation; a
+    clause title does not. Both candidates below are in plausible sequence, so only the
+    punctuation separates them."""
+    clauses = segment(["5.1 Codes\nAddresses are randomized as described in\n"
+                       "5.2 to randomize lower layer addresses.\nMore body."])
+    assert [c.id for c in clauses] == ["5.1"]
+    clauses = segment(["4.2 Terms\nThe preferred serialization is the one given in Clause\n"
+                       "4.3.1 of [IEEE754]. Then, when encoding, the shorter form applies."])
+    assert [c.id for c in clauses] == ["4.2"]
+
+
+def test_inline_lowercase_title_needs_a_multi_level_number():
+    """A bare single-level number opening a line is an ordered-list item or a page footer far
+    more often than a clause, so it still needs a title that reads as a title."""
+    clauses = segment(["1 Scope\nAn application that requires tag number\n"
+                       "2 support may restrict the tag content\nMore body."])
+    assert [c.id for c in clauses] == ["1"]
+    clauses = segment(["1 Scope\nBody text.\nAnnex A lists some existing binary formats\nMore body."])
+    assert [c.id for c in clauses] == ["1"]
+
+
+def test_openid_pdf_finds_lowercase_identifier_clauses():
+    ids = {c.id for c in ingest(str(FIX / "OpenID4VP1-0.pdf"))}
+    assert {"5.8", "E.1.1", "E.2.2", "E.8.1", "15.9.1"} <= ids
+
+
+@pytest.mark.parametrize("name", ["OpenID4VP1-0.pdf", "RFC8949.pdf", "iso_18013_5.pdf", "RFC8949.html"])
+def test_no_clause_absorbs_an_implausible_share_of_a_document(name):
+    """A heading rule that is too permissive shows up as one clause swallowing the rest of the
+    document, so cap the largest clause's share of the whole text."""
+    if not (FIX / name).exists():
+        pytest.skip(f"{name} not distributed")
+    clauses = ingest(str(FIX / name))
+    total = sum(len(c.text) for c in clauses)
+    assert max(len(c.text) for c in clauses) < total * 0.10
+
+
+def test_iso_pdf_segments_every_numbered_heading():
+    """The ISO fixture prints 265 bold numbered heading lines; segmentation finds all of them,
+    six numbering levels included, and invents none."""
+    if not (FIX / "iso_18013_5.pdf").exists():
+        pytest.skip("ISO fixture not distributed")
+    ids = {c.id.split("#")[0] for c in ingest(str(FIX / "iso_18013_5.pdf"))}
+    assert len(ids) == 265
+    assert {"8.2.1.1.2.1", "8.2.1.1.2.2", "8.2.1.1.2.3", "8.2.1.2.3.1", "8.2.1.2.3.2",
+            "8.2.2.1.1", "9.2.1.4", "E"} <= ids
+
+
+def test_html_heading_keeps_the_text_that_falls_under_it():
+    """The RFC Editor rendering puts every section under its own heading element and links each
+    heading to itself. Body text must reach the clause it sits under, and the self-link must not
+    become part of the title."""
+    clauses = {c.id: c for c in ingest(str(FIX / "RFC8949.html"))}
+    assert len(clauses) >= 70
+    assert sum(1 for c in clauses.values() if c.text) >= 60
+    assert "hundreds of standardized formats" in clauses["1"].text
+    assert clauses["1"].title == "Introduction"
+    assert "Jump Table" in clauses["B"].title
+    assert sum(1 for c in clauses.values() if re.search(r"\b(shall|must|should|MUST|SHALL|SHOULD)\b", c.text)) >= 20
+
+
+def test_html_titles_carry_no_permalink_decoration():
+    """A heading that links to itself with a pilcrow, a section sign or a link glyph is a
+    widespread convention; the glyph is decoration, not title text."""
+    for c in ingest(str(FIX / "RFC8949.html")):
+        assert not any(ch in c.title for ch in "\u00b6\u00a7\u00b0\u25b2"), c.title
+
+
+def test_html_navigation_is_not_clause_structure(tmp_path):
+    """A block whose every word comes from a hyperlink is navigation - a table of contents, an
+    index, a menu - not body text; read as headings it would hand later stages a run of empty
+    clauses, and leave the body headings that follow out of sequence. A heading element is exempt:
+    a heading that links to itself is still a heading."""
+    h = tmp_path / "t.html"
+    h.write_text(
+        "<body><nav><ul>"
+        '<li><p><a href="#s1">1</a>.\u00a0\u00a0<a href="#n1">Scope</a><a href="#t1">\u00b6</a></p></li>'
+        '<li><p><a href="#s2">2</a>.\u00a0\u00a0<a href="#n2">Requirements</a><a href="#t2">\u00b6</a></p></li>'
+        "</ul></nav>"
+        '<section><h2>\n<a href="#s1" class="selfRef">1. </a><a href="#n1" class="selfRef">Scope</a>'
+        '<a href="#s1" class="pilcrow">\u00b6</a>\n</h2>'
+        '<p>This document applies to the unit.<a href="#p1" class="pilcrow">\u00b6</a></p></section>'
+        '<section><h2>2. Requirements</h2>'
+        '<p>The unit shall respond. See <a href="#s1">Section 1</a>.</p></section></body>',
+        encoding="utf-8")
+    clauses = ingest(str(h))
+    assert [(c.id, c.title) for c in clauses] == [("1", "Scope"), ("2", "Requirements")]
+    assert clauses[0].text == "This document applies to the unit."
+    assert "See Section 1." in clauses[1].text
+
+
+def test_typographic_quotes_in_a_cddl_declaration_are_read(tmp_path):
+    """A publisher's layout tool turns the straight quotation mark RFC 8610 requires into a curly
+    pair, and the PDF reports the pair faithfully. No member of the declaration then parses, and
+    because the handler's own parser is its acceptance gate, the whole declaration is suppressed.
+    Written with escapes, never with the characters themselves, so this file stays ASCII."""
+    from tpg.grammar import harvest
+    md = tmp_path / "c.md"
+    md.write_text(
+        "## 8.2 WebAPI\n\nThe following CDDL structure defines the request structure.\n\n"
+        "OnlineRequest = {\n"
+        "\u201cversion\u201d : tstr,     ; Version of the structure, currently 1.0\n"
+        "\u201ctoken\u201d : tstr,       ; Token\n"
+        "? \u201cdocType\u201d : tstr,   ; Optional doctype field\n"
+        "\u201cnameSpaces\u201d : NameSpaces\n"
+        "}\n", encoding="utf-8")
+    clause = ingest(str(md))[0]
+    names = [d.name for d in harvest(clause)]
+    assert "OnlineRequest" in names
+    assert {"version", "token", "docType", "nameSpaces"} <= set(names)
+
+
+def test_typographic_punctuation_becomes_the_ascii_character_it_stands_for(tmp_path):
+    """Quotation marks, apostrophes and dashes, each named by escape. The range an en dash breaks
+    and the apostrophe a right single quotation mark breaks are the sibling cases of the quote."""
+    md = tmp_path / "p.md"
+    md.write_text("## 5.1 Codes\n"
+                  "label: tstr .size (1\u20132),\n"
+                  "The \u2018code\u2019 and the \u201cname\u201d of the issuer\u2019s mDL \u2014 see 7.3.2 \u2010 shall match.\n",
+                  encoding="utf-8")
+    text = ingest(str(md))[0].text
+    assert "label: tstr .size (1-2)," in text
+    assert "The 'code' and the \"name\" of the issuer's mDL - see 7.3.2 - shall match." in text
+    assert text.isascii()
+
+
+def test_general_punctuation_quotes_and_dashes_are_all_covered(tmp_path):
+    """The inclusion rule, executable: a character of the General Punctuation block is normalised
+    exactly when it is a dash (category Pd) or a quotation mark that is not an angle one - the
+    characters whose only difference from an ASCII character is how they are drawn. Everything else
+    in the block means more than its shape and is left alone: a prime is a unit, a hyphenation point
+    marks where a word may break, an angle quotation mark is another language's quoting convention,
+    an ellipsis and a bullet stand for no single ASCII character."""
+    import unicodedata
+    from tpg.ingest import TYPOGRAPHIC
+    for cp in range(0x2000, 0x2070):
+        name = unicodedata.name(chr(cp), "")
+        restyled = (unicodedata.category(chr(cp)) == "Pd"
+                    or (name.endswith("QUOTATION MARK") and "ANGLE" not in name))
+        assert restyled == (cp in TYPOGRAPHIC), f"U+{cp:04X} {name}"
+    assert set(TYPOGRAPHIC.values()) == {"-", "'", '"'}
+    for cp in (0x2026, 0x2027, 0x2032, 0x2033, 0x2022, 0x2039, 0x2044, 0x2003, 0x202f):
+        assert cp not in TYPOGRAPHIC, unicodedata.name(chr(cp))
+
+
+def test_a_quote_written_with_a_curly_quote_still_grounds(tmp_path):
+    """The grounding check compares normalised forms (tpg.extract.norm), and an LLM quoting a clause
+    may write the quotation mark the way a publisher would. Normalising the clause text here without
+    normalising the quote there turns a verbatim quote into an ungrounded one. The two normalisations
+    have to agree, and since 83d78bf they do: `norm` shares ingest's TYPOGRAPHIC mapping."""
+    from tpg.extract import norm
+    md = tmp_path / "q.md"
+    md.write_text("## 5.1 Codes\nThe \u201ctoken\u201d attribute identifies the mDL.\n", encoding="utf-8")
+    clause = ingest(str(md))[0]
+    assert norm("The \u201ctoken\u201d attribute identifies the mDL.") in norm(clause.text)

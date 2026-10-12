@@ -1,7 +1,7 @@
 import pytest
 
-from tpg.extract import (build_extract_prompt, check_requirements, extract, extract_clause,
-                         find_candidates)
+from tpg.extract import (build_extract_prompt, check_draft, check_requirements, chunks, extract,
+                         extract_clause, find_candidates)
 from tpg.llm import LLMError
 from tpg.models import Clause, RequirementDraft
 
@@ -76,8 +76,15 @@ def test_check_requirements_empty_batch_is_ok():
 
 
 def test_prompt_contains_clause_candidates_and_failures():
-    p = build_extract_prompt(CLAUSE, ["c1", "c2"], ["prev failure"])
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1", "c2"], ["prev failure"], [])
     assert "5.2" in p and "c1" in p and "c2" in p and "prev failure" in p
+
+
+def test_prompt_asks_for_applies_when():
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1"], [], [])
+    assert p.count("applies_when") == 2          # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "applies_when"'))
+    assert "quote" in rule.lower() and "empty" in rule
 
 
 def test_extract_clause_success_assigns_ids(fake_llm):
@@ -102,7 +109,7 @@ def test_extract_clause_gap_after_three_failures(fake_llm):
     reqs, gap = extract_clause(CLAUSE, fake_llm([bad, bad, bad]))
     assert reqs == []
     assert gap is not None and gap.stage == "extract" and gap.attempts == 3
-    assert gap.clause_id == "5.2" and gap.requirement_id is None and "nope" in gap.reason
+    assert gap.clause_id == "5.2" and gap.source_id is None and "nope" in gap.reason
 
 
 def test_extract_clause_ids_follow_source_order(fake_llm):
@@ -123,3 +130,153 @@ def test_extract_skips_clauses_without_candidates(fake_llm):
     llm = fake_llm([GOOD])
     reqs, gaps = extract([info, CLAUSE], llm)
     assert len(llm.prompts) == 1 and len(reqs) == 2 and gaps == []
+
+
+def test_should_not_and_never_are_grounded():
+    c = Clause(id="1", title="t", text="Other elements should not be present. A counter shall never be reused.")
+    ok = [RequirementDraft(text="a", modality="should_not", source_quote="Other elements should not be present."),
+          RequirementDraft(text="b", modality="shall_not", source_quote="A counter shall never be reused.")]
+    assert check_requirements(c, ok) == []
+    assert check_draft(c, 1, RequirementDraft(text="a", modality="should", source_quote="should not be present")) is not None
+
+
+def test_chunks_split_at_line_boundaries_under_limit():
+    text = "\n".join(f"line {i} " + "x" * 90 for i in range(100))
+    parts = chunks(text, limit=1000)
+    assert len(parts) >= 9 and all(len(p) <= 1000 for p in parts)
+    assert "\n".join(parts) == text
+
+
+def test_extract_clause_keeps_valid_drafts_and_retries_only_invalid(fake_llm):
+    bad = {"text": "x", "modality": "shall", "source_quote": "not in clause"}
+    good1 = GOOD["requirements"][0]
+    fixed = GOOD["requirements"][1]
+    llm = fake_llm([{"requirements": [good1, bad]}, {"requirements": [fixed]}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert gap is None and [r.modality for r in reqs] == ["shall_not", "may"]
+    assert len(llm.prompts) == 2
+    assert "not in clause" in llm.prompts[1] and good1["text"] in llm.prompts[1]
+
+
+def test_extract_clause_gap_keeps_accepted_requirements(fake_llm):
+    bad = {"text": "x", "modality": "shall", "source_quote": "nope"}
+    good1 = GOOD["requirements"][0]
+    llm = fake_llm([{"requirements": [good1, bad]}, {"requirements": [bad]}, {"requirements": [bad]}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert len(reqs) == 1 and reqs[0].id == "REQ-5.2-1"
+    assert gap is not None and gap.attempts == 3 and "nope" in gap.reason
+
+
+def test_extract_clause_chunks_long_clause(fake_llm):
+    long = Clause(id="9", title="t", text="\n".join(f"Item {i}: the unit shall do thing {i}." for i in range(400)))
+    llm = fake_llm([{"requirements": []}] * 10)
+    reqs, gap = extract_clause(long, llm)
+    assert gap is None and reqs == [] and len(llm.prompts) == 6
+    assert "part 1/" in llm.prompts[0]
+
+
+def test_extract_clause_empty_retry_does_not_clear_open_failures(fake_llm):
+    bad = {"requirements": [{"text": "x", "modality": "shall", "source_quote": "not in clause"}]}
+    llm = fake_llm([bad, {"requirements": []}, bad])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert reqs == [] and gap is not None and gap.attempts == 3 and "not in clause" in gap.reason
+    assert len(llm.prompts) == 3 and "not in clause" in llm.prompts[2]
+
+
+def test_extract_clause_partial_fix_keeps_remaining_failure_open(fake_llm):
+    bad1 = {"text": "x", "modality": "shall", "source_quote": "nope one"}
+    bad2 = {"text": "y", "modality": "shall", "source_quote": "nope two"}
+    good = GOOD["requirements"][0]
+    llm = fake_llm([{"requirements": [bad1, bad2]}, {"requirements": [good]}, {"requirements": []}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert len(reqs) == 1 and gap is not None and "nope" in gap.reason and len(llm.prompts) == 3
+
+
+def test_extract_clause_llm_error_keeps_pending_failures(fake_llm):
+    bad = {"requirements": [{"text": "x", "modality": "shall", "source_quote": "nope"}]}
+    llm = fake_llm([bad, LLMError("bad json"), bad])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert gap is not None and "nope" in gap.reason
+    assert "nope" in llm.prompts[2] and "bad json" in llm.prompts[2]
+
+
+def test_check_draft_rejects_an_unrecognised_modality():
+    d = RequirementDraft.model_validate({"text": "x", "modality": "obligatory",
+                                         "source_quote": "the device shall not process the request"})
+    msg = check_draft(CLAUSE, 1, d)
+    assert msg is not None and "modality" in msg and "obligatory" in msg
+
+
+def test_extract_clause_keeps_valid_drafts_when_another_has_a_bad_modality(fake_llm):
+    bad = {"text": "x", "modality": "obligatory", "conditions": [], "source_quote": "The device may log it."}
+    llm = fake_llm([{"requirements": [GOOD["requirements"][0], bad]}, {"requirements": []}, {"requirements": []}])
+    reqs, gap = extract_clause(CLAUSE, llm)
+    assert [r.modality for r in reqs] == ["shall_not"]
+    assert gap is not None and "obligatory" in gap.reason and len(llm.prompts) == 3
+
+
+def test_chunk_limit_is_3000():
+    from tpg.extract import CHUNK_LIMIT
+    assert CHUNK_LIMIT == 3000
+
+
+def test_iso_741_chunks_under_limit():
+    from pathlib import Path
+    from tpg.ingest import ingest
+    p = Path(__file__).parent / "fixtures" / "iso_18013_5.pdf"
+    if not p.exists():
+        pytest.skip("ISO fixture not distributed")
+    c = next(c for c in ingest(str(p)) if c.id == "7.4.1")
+    parts = chunks(c.text)
+    assert len(parts) == 4 and max(map(len, parts)) < 3000
+
+
+NAMED = {"requirements": [dict(GOOD["requirements"][0], name="request"),
+                          dict(GOOD["requirements"][1], name="log entry")]}
+
+
+def test_prompt_asks_for_the_subject_name():
+    p = build_extract_prompt(CLAUSE, CLAUSE.text, "1/1", ["c1"], [], [])
+    assert p.count('"name"') == 2             # one rule and the reply template
+    rule = next(l for l in p.splitlines() if l.startswith('- "name"'))
+    assert "noun phrase" in rule
+    assert p.index('"source_quote": a VERBATIM') < p.index('- "name"')   # existing rules keep their order
+
+
+def test_extract_clause_keeps_the_subject_name(fake_llm):
+    reqs, gap = extract_clause(CLAUSE, fake_llm([NAMED]))
+    assert gap is None and [r.name for r in reqs] == ["request", "log entry"]
+
+
+def test_extract_clause_without_a_name_keeps_the_requirement(fake_llm):
+    reqs, gap = extract_clause(CLAUSE, fake_llm([GOOD]))
+    assert gap is None and len(reqs) == 2 and [r.name for r in reqs] == ["", ""]
+
+
+def test_extract_clause_normalises_a_badly_typed_name(fake_llm):
+    batch = {"requirements": [dict(GOOD["requirements"][0], name=["request", "session"]),
+                              dict(GOOD["requirements"][1], name=42)]}
+    reqs, gap = extract_clause(CLAUSE, fake_llm([batch]))
+    assert gap is None and [r.name for r in reqs] == ["request", "42"]
+
+
+def test_a_name_absent_from_the_clause_does_not_break_grounding():
+    """The quote stays the only grounded field: a noun phrase need not appear contiguously in the text."""
+    d = RequirementDraft(text="The device may log the request.", modality="may",
+                         source_quote="The device may log it.", name="audit trail entry")
+    assert check_requirements(CLAUSE, [d]) == []
+    assert d.text == "The device may log the request."
+
+
+def test_the_subject_name_reaches_the_emitted_plan(fake_llm, tmp_path):
+    import json
+
+    from tpg.emit import build_plan, write_plan
+    from tpg.models import Source
+    reqs, _ = extract_clause(CLAUSE, fake_llm([NAMED]))
+    plan = build_plan(Source(path="s.md", sha256="0", generated_at="t", model="m"), reqs, [], [], [], [], [])
+    out = tmp_path / "plan.json"
+    write_plan(plan, str(out))
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert [r["name"] for r in written["requirements"]] == ["request", "log entry"]
+    assert written["requirements"][0]["text"].startswith("If the request is malformed")
