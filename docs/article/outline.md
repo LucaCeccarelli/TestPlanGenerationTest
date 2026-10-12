@@ -467,6 +467,27 @@ What carries that information is the **denominator**: 65 ICS items is a claim ab
 features the tool found in the document, and it is that count, not the ratio, which should be compared
 across runs and across standards.
 
+**The deterministic half of the result, measured without any model.** The grammar, ICS and derive
+stages use no LLM, so these figures are exactly reproducible from the input alone, which makes them
+the part of the result a reader can check. On ISO/IEC DIS 18013-5, 265 clauses:
+
+| | Start of the iteration | Now |
+|---|---|---|
+| Objects harvested from formal notation | 94, of which about a third malformed | **152**, all well formed |
+| ICS items, all mandatory or optional | none | **75** |
+| Coverage items, deflation off | 250 | **604** |
+| Coverage items, deflation on | - | 596, of which 8 `reference` |
+| Invalid-side items | **0** | 152 `encoding_invalid` plus 46 negative `absence` |
+| Test groups represented | 2 of 4 | **4 of 4**: 75 capability, 331 valid, 190 invalid behaviour |
+| Due ICS items carrying a coverage item | - | **75 of 75**, the D21 guarantee |
+
+Two of the four invalid checks, `value_invalid` and `boundary_outside`, are absent, and the cause is
+the input rather than the tool: across 126 pages this standard's formal notation states no value or
+size constraint at all, no `.size`, no range, no bounded repetition, not one literal among its member
+types. The same stages on a synthetic clause using only those constructs produce 8 and 7 of them. The
+honest reading is that a quarter of the syntax-testing ladder is unexercised by this particular
+document and will fire on standards that constrain their values.
+
 **To be filled from the next full run** on a local 31B model: the ICS item count with its coverage
 invariant restated; objects by origin,
 prose against grammar; coverage items by test group; the structural match rate beside the judge rate
