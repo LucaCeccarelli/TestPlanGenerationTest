@@ -143,8 +143,16 @@ def annotate(case: dict) -> dict:
 
 
 def object_checks(plan: dict) -> dict[str, set[str]]:
-    """Normalised source-object name -> the set of `check` values the plan's coverage items carry for it."""
-    names = {o["id"]: normalise(o["name"]) for o in plan.get("objects", [])}
+    """Normalised source name -> the set of `check` values the plan's coverage items carry for it.
+
+    Requirements carry a `name` too since Task 9, so a requirement-derived item is scorable whenever
+    the extraction named what the requirement constrains. An unnamed source is skipped rather than
+    bucketed under the empty string, which would merge every unnamed requirement into one key.
+    """
+    names = {
+        s["id"]: normalise(s.get("name") or "")
+        for s in list(plan.get("objects", [])) + list(plan.get("requirements", []))
+    }
     index: dict[str, set[str]] = collections.defaultdict(set)
     for item in plan.get("coverage_items", []):
         name = names.get(item.get("source_id") or "")
