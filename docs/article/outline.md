@@ -503,11 +503,64 @@ types. The same stages on a synthetic clause using only those constructs produce
 honest reading is that a quarter of the syntax-testing ladder is unexercised by this particular
 document and will fire on standards that constrain their values.
 
-**To be filled from the next full run** on a local 31B model: the ICS item count with its coverage
-invariant restated; objects by origin,
-prose against grammar; coverage items by test group; the structural match rate beside the judge rate
-on the new plan; and wall time against the previous 12.7 hours, with the LLM call count under batched
-and per-item generation.
+**The next full run, 2026-10-17: the upstream half filled, the case half still owed.** The run was
+made on a local `qwen3.8:27b`, not on the 31B model of the previous run, so every model-dependent
+count below carries a change of model as well as a change of tool. Full analysis:
+`docs/evaluation/2026-11-16-iso-18013-5-remote-run-2.md`.
+
+*Upgrades between the two runs* (the sixth iteration, as built):
+
+- Data model: the ICS proforma, the four X.291 test groups, applicability conditions.
+- Grammar stage: CDDL, ABNF, JSON Schema and ASN.1 declarations harvested as objects, no model.
+- Derive: one capability item per due ICS item, the invalid side of every ladder, inopportune items.
+- Deflation: generic test suites and requirement/object overlap.
+- Generation: batched, one call per source with per-item acceptance.
+- Extraction: requirements record the data item they constrain; truncated replies salvaged row by
+  row; the model stage chunked.
+- Ingest: lowercase clause titles, typographic punctuation, HTML tables of contents.
+- Evaluation: three denominators, the judge-free structural matcher, its scorable population printed.
+- Operational: `--out` proved writable first, two sidecars persisted during the run.
+
+*Measured, previous run against this one:*
+
+| | previous run (`gemma4:31b`) | this run (`qwen3.8:27b`) | change |
+|---|---|---|---|
+| Requirements | 842 | 810 | -4 per cent |
+| Objects | 921 | 1,590, of which 152 from grammar | 1.73x |
+| ICS items | none | **1,989**: 1,438 mandatory, 394 optional, 157 conditional | new |
+| Coverage items | 3,257 | 7,978 | 2.45x |
+| by test group | not grouped | 1,723 capability, 4,052 valid, 2,186 invalid, 17 inopportune | new |
+| Extract-stage gaps | 24 | 14 | |
+| Model-stage gaps, of which truncated replies | 16, 12 | 16, 0 | |
+| **Structural match, named objects only** | **22.5 per cent** (168 of 747) | **34.9 per cent** (261 of 747) | **+12.4 points** |
+| Structural match, every named source | the same | 36.9 per cent (276 of 747) | |
+| In-edition subset | 18.8 per cent | 33.3 per cent | |
+| Test cases | 3,231 | **0** | |
+| LLM judge / precision sample | 13.8 per cent / 56, 50, 54 of 60 | void | |
+| Wall time | 12.7 h | 126.1 h | |
+
+The ICS invariant held, 1,832 of 1,832 due items carrying a coverage item, and its measured
+companion, due items whose every coverage item got a test case, read 0 per cent: the first run in
+which the two figures separate, which is the argument of this section made by an accident.
+
+*How it improved.* The limit the previous run named, the table clauses that held 361 rows and
+produced 4 objects, is gone: the data element table went from 3 objects to 35 and the two certificate
+profiles from 1 to 91, and no model-stage gap is a truncated reply any more. The structural match
+followed exactly there, 7.2.1 from 16 to 69 of 90 official cases and 7.2 from 24 to 49 of 76, and by
+check family encoding rose from 30 to 73 per cent, consistency from 23 to 68, presence from 33 to 50.
+145 official cases became matched and 37 were lost.
+
+*What did not improve.* Behaviour, the suite's largest family, is at 16 per cent (36 of 220); size
+fell from 3 to 0 of 53; clauses 9.2.2 and 9.3.2 stay at zero. And the generate stage returned no case
+for any of its 2,334 batches, three attempts each. The cause is not recoverable from the artefacts,
+because the gap reason keeps the case-check failures and discards the call errors, which is a defect
+of the tool that this run found. The projections were also off: 1,463 ICS items and 4,629 coverage
+items projected, 1,989 and 7,978 measured.
+
+**Still to be filled from a run that writes its cases:** the structural match rate beside the judge
+rate on the new plan; grounded, actionable and correct on a sample; and wall time against the
+previous 12.7 hours, with the LLM call count under batched and per-item generation, on the same
+model as the previous run.
 
 ### 6.6 Sources added
 

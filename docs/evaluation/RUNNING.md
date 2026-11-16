@@ -243,23 +243,38 @@ Also send the exit code of the generate step, `ollama --version`, the GPU and VR
 and the values of `OLLAMA_CONTEXT_LENGTH`, `OLLAMA_KEEP_ALIVE` and `OLLAMA_TIMEOUT` actually in
 force. Everything in `eval/` quotes the ISO documents, so send it privately and never commit it.
 
-## 11. Previous measurement, for comparison
+## 11. Previous measurements, for comparison
 
-From the last full run of the **previous** iteration (`eval/eval_remote_1`, 3257 coverage items, no
-ICS stage, requirements with no `name`, unbatched generation). The structural and judge rates below
-are over that run's population, which section 9 says is not this run's population:
+Three full runs on the same fixture, oldest first. Add a column for each new run and keep the old
+ones. The structural and judge rates are each over their own run's population, which section 9 says
+is not the next run's population:
 
-| | previous run |
-|---|---|
-| requirements / objects | 842 / 921 |
-| coverage items / test cases / gaps | 3257 / 3231 / 66 |
-| ICS items | not produced by that version |
-| structural match of the official suite | 22.5 % (168 of 747 scorable; 18.5 % of all 907) |
-| LLM judge | 13.8 % (95 of 687) |
-| sampled cases grounded / actionable / correct | 56 / 50 / 54 of 60 |
-| wall time | 45557 s (12.7 h) |
+| | baseline, 2026-09-21 | remote run 1, 2026-10-03 | remote run 2, 2026-10-17 |
+|---|---|---|---|
+| artefacts | `eval/iso_full.json` | `eval/eval_remote_1` | `eval/eval_remote_2` |
+| model | `gemma4:31b`, Ollama Cloud | `gemma4:31b`, local | `qwen3.8:27b`, local |
+| tool | `1bab20c`, sentence-level | test model and coverage items, no ICS stage, requirements with no `name`, unbatched | `cdf61ff`, this branch merged |
+| clauses ingested | 117 | 265 | 265 |
+| requirements / objects | 215 / none | 842 / 921 | 810 / 1590 |
+| ICS items | not produced | not produced | **1989** |
+| coverage items / test cases / gaps | none / 428 / 14 | 3257 / 3231 / 66 | 7978 / **0** / 8008 |
+| structural match of the official suite | not scored | 22.5 % (168 of 747 scorable; 18.5 % of all 907) | **34.9 %** on named objects only, the comparable figure (261 of 747); 36.9 % over every named source (276 of 747; 30.4 % of all 907) |
+| LLM judge | 4.2 % (29 of 687) | 13.8 % (95 of 687) | void: no test case to judge |
+| sampled cases grounded / actionable / correct | 52 / 50 / 51 of 60 | 56 / 50 / 54 of 60 | void: no test case to sample |
+| wall time | about 45 min | 45557 s (12.7 h) | 453928 s (126.1 h) |
 
-For this branch, the branch review projects 1463 ICS items and about 4629 coverage items from the
-same sources (x1.42), with the generation calls roughly unchanged because the new items ride along in
-existing batches. Those are projections, not a run: the run you are about to do is the first real
-measurement of them.
+**How run 2 improved on run 1, and where it did not.** Everything upstream of generation improved:
+objects x1.73, coverage items x2.45, the ICS proforma exists, extract gaps fell from 24 to 14, the
+truncated-reply gaps on the table clauses are gone, and the structural match rose 12.4 points on the
+comparable basis, most of it on the data element table (7.2.1: 16 to 69 of 90). The generate stage
+then returned no case for any of its 2334 batches, so the judge and precision rows are void rather
+than zero, and the model changed between the two runs, so neither the counts nor the wall time
+isolate the tool. The full analysis is `2026-11-16-iso-18013-5-remote-run-2.md`.
+
+**The projections, checked.** The branch review projected 1463 ICS items and about 4629 coverage
+items for this branch (x1.42), with generation calls roughly unchanged at about 1600 and a wall time
+of about 6.3 hours. Measured: 1989 ICS items, 7978 coverage items, 2334 generation batches, 126
+hours. The projection assumed run 1's 921 objects and run 2 extracted 1590.
+
+**Before the next run**, do section 5 with the model you intend to use and check that its log shows
+cases being written: run 2 would have shown `0/N cases (GAP)` on its first source.
