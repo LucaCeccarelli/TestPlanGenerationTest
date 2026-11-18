@@ -300,7 +300,7 @@ reference suite; no covering arrays over conformance applicability predicates.
 ### 6.2 The specification of this iteration
 
 Nine decisions, D21 to D29, in
-`docs/superpowers/specs/2026-10-12-conformance-methodology-design.md`. New pipeline:
+`method2-deterministic/docs/superpowers/specs/2026-10-12-conformance-methodology-design.md`. New pipeline:
 
 ```
 ingest  ->  grammar (deterministic objects from declarations)
@@ -506,7 +506,7 @@ document and will fire on standards that constrain their values.
 **The next full run, 2026-10-17: the upstream half filled, the case half still owed.** The run was
 made on a local `qwen3.8:27b`, not on the 31B model of the previous run, so every model-dependent
 count below carries a change of model as well as a change of tool. Full analysis:
-`docs/evaluation/2026-11-16-iso-18013-5-remote-run-2.md`.
+`method2-deterministic/docs/evaluation/2026-11-16-iso-18013-5-remote-run-2.md`.
 
 *Upgrades between the two runs* (the sixth iteration, as built):
 
