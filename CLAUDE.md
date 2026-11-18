@@ -10,6 +10,7 @@ running example). They are compared in one article.
 | `method2-deterministic/` | Deterministic pipeline `tpg`: fixed stages, the LLM only extracts and writes | the former `TestPlanGenerationTest` repository |
 | `method3-harness/` | The same task given to an industrial agentic harness (Claude Code) | not started |
 | `docs/article/` | The article, common to the three methods | |
+| `docs/project/` | Project-level documents: the project specification (`project_specifications.tex`, in French) and its bibliography | |
 
 ## Treat each method directory as its own repository
 
@@ -28,7 +29,10 @@ The three methods share a goal and an article, nothing else.
 
 ## What is common
 
-- `docs/article/` is the only shared content. `experiments.tex` is the experiments and results
+- The root `docs/` is the only shared content: `docs/article/` for the article and `docs/project/`
+  for documents about the project as a whole. A document that concerns one method only belongs in
+  that method's own `docs/`.
+- In `docs/article/`, `experiments.tex` is the experiments and results
   section; `outline.md` is the working outline. When a method produces a new result, the figure
   goes into its own evaluation docs first and is then reported in `docs/article/`.
 - The article compares the three methods on the same input and the same ground truth (the official

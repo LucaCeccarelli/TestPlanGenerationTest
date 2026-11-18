@@ -9,3 +9,4 @@ article. Each method is a self-contained project with its own README, dependenci
 | [`method2-deterministic/`](method2-deterministic/README.md) | Deterministic pipeline `tpg` with an explicit test model |
 | [`method3-harness/`](method3-harness/README.md) | The same task given to an industrial agentic harness |
 | [`docs/article/`](docs/article/) | The article, common to the three methods |
+| [`docs/project/`](docs/project/) | Project-level documents: the project specification and its bibliography |
