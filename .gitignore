@@ -1,8 +1,11 @@
 .env
-tests/fixtures/iso_18013_5.pdf
-__pycache__/
-*.egg-info/
 .venv/
-.superpowers/
-/eval/
+__pycache__/
 .idea/
+.claude/settings.local.json
+# LaTeX build files
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
