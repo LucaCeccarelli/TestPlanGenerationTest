@@ -1,0 +1,6 @@
+# The standard and anything derived from its text are never committed.
+input/
+output/
+work/
+trace/
+runs/

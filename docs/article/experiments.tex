@@ -4,6 +4,8 @@
 % Sources of the figures: docs/article/outline.md and, under method2-deterministic/,
 % docs/evaluation/*.md, eval/eval_remote_1/eval/summary.txt, eval/eval_remote_2/eval/summary.txt.
 % Method 1 full run: method1-rag/data/output/vps_run_2026-11-19/ (plan, audit report, run_all.log).
+% Method 3 run: method3-harness/runs/claude-fable-5-2-2026-11-23/ (output/, trace/, eval/summary.txt);
+% the prompt is in method3-harness/README.md.
 \providecommand{\tbd}{\textit{tbd}}
 
 \section{Experiments and Results}
@@ -525,25 +527,113 @@ matched and 37 stopped being matched.
 \subsection{Method 3: agentic harness}
 \label{sec:exp-harness}
 
-% TODO: complete this subsection once the runs are done.
+% TODO: runs with open-source models; judge coverage and precision, with the
+% same judge model for every row of the comparison.
 \paragraph{Method.}
-% TODO: describe the protocol. Points to fix: the prompt given to the harness,
-% what it may read (the standard only, never TS 18013-6), the output format
-% (the same plan schema, so that the same evaluation scripts apply), the
-% models, and the judge model, which should be the same for every row.
 The third method gives the task to an industrial agentic coding harness,
-Claude Code, with no purpose-built pipeline around it. The harness receives
-the same input document and is asked to produce a test plan in the same
-format, which is then scored with the same evaluation as the deterministic
-pipeline. Two families of models are run through the harness: Anthropic
-models (\tbd) and open-source models (\tbd).
+Claude Code, with no purpose-built pipeline around it: the method is a single
+prompt. The harness is started in a directory that holds only the standard,
+with every customisation disabled (no project instructions, skills, plug-ins,
+hooks or external tool servers) and the web tools denied. The prompt forbids
+any source other than the document, including ISO/IEC TS 18013-6 and any
+existing test suite, requires a verbatim quote for every requirement and
+object, and asks for a recorded gap instead of an unsound case. It leaves the
+organisation of the work free but fixes the output: the plan format of the
+deterministic pipeline (requirements, named objects, coverage items with its
+vocabulary of checks, one test case per coverage item), so that the same
+evaluation scripts apply unchanged. That format carries part of the method of
+Section~\ref{sec:exp-conformance}, which is a limit of the comparison; a second
+one is that the model may have met the official suite during its training,
+which the protocol cannot exclude. Two families of models are to be run through
+the harness; one run is reported here, with the Anthropic model
+\texttt{claude-fable-5-2}, and the open-source runs are pending.
 
 \paragraph{Results.}
-Table~\ref{tab:harness} gives the results per model. \tbd
+The harness returned a complete plan in 31 minutes
+(Table~\ref{tab:harness-run}). It chose its own organisation: it split the
+document into eight clause ranges, gave each to a sub-agent working in
+parallel, merged their fragments with a script and verified the result with a
+checker it wrote, which every quote and every reference passes. All 2,417
+coverage items carry a test case, of 3.6 steps on average, and 1,516 of the
+1,764 requirements and objects carry at least one coverage item; the others
+are among the 352 recorded gaps. The plan departs from the format in one
+field, the origin of an object, where it used its own values for 737 objects;
+no evaluation script reads that field.
+
+The structural match is 216 of 747 scorable official cases (28.9\,\%), above
+version~2 of the deterministic pipeline (22.5\,\%) and below version~3
+(34.9\,\% on named objects). No match is owed to a requirement, although all
+898 carry a name. The two plans do not cover the same cases
+(Table~\ref{tab:harness-families}): the harness is ahead on behaviour, the
+largest family, and on clauses 9.1.4 (23 of 34 against 9) and 8.3.2.1.2.3
+(22 of 32 against 9), and behind
+on presence and on the data-element clauses 7.2.1 (50 of 90 against 69) and
+7.2 (30 of 76 against 49). Clauses 9.2.2 and 9.3.2 are matched by neither.
+Of the scorable cases, 150 are matched by both plans, 66 by the harness only
+and 126 by version~3 only, so that the two together match 342 (45.8\,\%).
+Judge coverage and precision have not been measured for this plan.
 
 \begin{table}[t]
   \centering
-  \caption{Agentic harness: results per model (pending). Judge: judge
+  \caption{Agentic harness: run with \texttt{claude-fable-5-2} on ISO/IEC DIS
+    18013-5. Structural match: micro rate, then macro over clauses and over
+    test families.}
+  \label{tab:harness-run}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lr}
+    \toprule
+    Measure & Value \\
+    \midrule
+    Requirements                            & 898 \\
+    Objects                                 & 866 \\
+    Coverage items                          & 2,417 \\
+    \quad cap. / valid / invalid / inopp.   & 104 / 1,977 / 325 / 11 \\
+    Test cases                              & 2,417 \\
+    Gaps                                    & 352 \\
+    \quad extract / model / generate        & 38 / 171 / 143 \\
+    Sources with a coverage item            & 1,516 / 1,764 \\
+    \midrule
+    Structural match, all cases ($n = 907$) & 216 / 747 = 28.9\,\% \\
+    \quad macro clauses / families          & 17.7\,\% / 28.6\,\% \\
+    Citing the standard ($n = 687$)         & 171 / 591 = 28.9\,\% \\
+    \quad macro clauses / families          & 17.4\,\% / 30.4\,\% \\
+    In-edition ($n = 250$)                  & 51 / 207 = 24.6\,\% \\
+    \quad macro clauses / families          & 20.1\,\% / 22.9\,\% \\
+    \midrule
+    Wall time                               & 31\,min \\
+    Sub-agents                              & 8 \\
+    Model time, summed over the agents      & 2.5\,h \\
+    Output tokens                           & 1.0 million \\
+    Estimated cost                          & 59 USD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Structural match by check family, matched of scorable official
+    cases: deterministic pipeline, version 3, against the agentic harness.}
+  \label{tab:harness-families}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Family & \multicolumn{2}{c}{Deterministic, v3} & \multicolumn{2}{c}{Harness} \\
+    \midrule
+    Encoding     & 85 / 117 & 72.6\,\% & 76 / 117 & 65.0\,\% \\
+    Consistency  & 21 / 31  & 67.7\,\% & 14 / 31  & 45.2\,\% \\
+    Presence     & 69 / 137 & 50.4\,\% & 27 / 137 & 19.7\,\% \\
+    Value domain & 62 / 165 & 37.6\,\% & 50 / 165 & 30.3\,\% \\
+    Behaviour    & 36 / 220 & 16.4\,\% & 46 / 220 & 20.9\,\% \\
+    Reuse        & 3 / 24   & 12.5\,\% & 2 / 24   & 8.3\,\% \\
+    Size         & 0 / 53   & 0.0\,\%  & 1 / 53   & 1.9\,\% \\
+    \midrule
+    All scorable & 276 / 747 & 36.9\,\% & 216 / 747 & 28.9\,\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Agentic harness: results per model (other runs pending). Judge: judge
     coverage; Struct.: structural match; G / A / C: grounded, actionable and
     correct, of 60 sampled cases.}
   \label{tab:harness}
@@ -552,7 +642,7 @@ Table~\ref{tab:harness} gives the results per model. \tbd
     \toprule
     Harness & Model & Cases & Judge & Struct. & G / A / C & Time \\
     \midrule
-    Claude Code & Anthropic, \tbd   & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    Claude Code & \texttt{claude-fable-5-2} & 2,417 & \tbd & 28.9\,\% & \tbd & 0.5\,h \\
     Claude Code & Anthropic, \tbd   & \tbd & \tbd & \tbd & \tbd & \tbd \\
     Claude Code & Open source, \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
     Claude Code & Open source, \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
@@ -564,16 +654,18 @@ Table~\ref{tab:harness} gives the results per model. \tbd
 \subsection{Comparison of the three methods}
 \label{sec:exp-comparison}
 
-% TODO: write the comparison once the RAG and harness results are in.
+% TODO: write the comparison once the RAG plan is scored and the judge has run.
 % Note: the structural match needs a plan that carries coverage items with a
-% named source object; decide how it applies to the RAG and harness outputs.
+% named source object. The harness plan has them (the format was imposed); the
+% RAG plan does not, so decide how the match applies to it.
 Table~\ref{tab:comparison} places the three methods side by side on the
 metrics of Section~\ref{sec:exp-setting}. \tbd
 
 \begin{table}[t]
   \centering
-  \caption{The three methods on ISO/IEC DIS 18013-5 (harness results and
-    the scoring of the RAG plan pending). Judge: judge coverage, of the 687 official cases citing the
+  \caption{The three methods on ISO/IEC DIS 18013-5 (scoring of the RAG
+    plan, judge and precision of the harness plan, and open-source harness
+    runs pending). Judge: judge coverage, of the 687 official cases citing the
     standard; Struct.: structural match, of the 747 scorable official cases;
     G / A / C: grounded, actionable and correct, of 60 sampled cases.}
   \label{tab:comparison}
@@ -588,7 +680,7 @@ metrics of Section~\ref{sec:exp-setting}. \tbd
     2. Deterministic, v2  & \texttt{gemma4:31b}  & 3,231 & 13.8\,\% & 22.5\,\% & 56 / 50 / 54 & 12.7\,h \\
     2. Deterministic, v3  & \texttt{qwen3.8:27b} & 0     & void     & 36.9\,\% & void         & 126.1\,h \\
     \midrule
-    3. Harness            & Anthropic, \tbd      & \tbd  & \tbd     & \tbd     & \tbd         & \tbd \\
+    3. Harness            & \texttt{claude-fable-5-2} & 2,417 & \tbd & 28.9\,\% & \tbd       & 0.5\,h \\
     3. Harness            & Open source, \tbd    & \tbd  & \tbd     & \tbd     & \tbd         & \tbd \\
     \bottomrule
   \end{tabular}
