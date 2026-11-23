@@ -1,0 +1,595 @@
+% Experiments and results.
+% Fragment: \input{experiments} from the main article. Requires \usepackage{booktabs}.
+% Every \tbd marks a result that has not been computed yet.
+% Sources of the figures: docs/article/outline.md and, under method2-deterministic/,
+% docs/evaluation/*.md, eval/eval_remote_1/eval/summary.txt, eval/eval_remote_2/eval/summary.txt.
+% Method 1 full run: method1-rag/data/output/vps_run_2026-11-19/ (plan, audit report, run_all.log).
+\providecommand{\tbd}{\textit{tbd}}
+
+\section{Experiments and Results}
+\label{sec:experiments}
+
+Three methods are compared on the same task, generating a conformance test
+plan from the text of a standard: a retrieval-augmented agentic pipeline
+(Section~\ref{sec:exp-rag}), a deterministic pipeline in which the language
+model only fills the steps a fixed procedure assigns to it
+(Section~\ref{sec:exp-deterministic}), and an industrial agentic harness
+given the task directly (Section~\ref{sec:exp-harness}). Each subsection
+gives the method in a short paragraph and then its results;
+Section~\ref{sec:exp-comparison} places the three side by side.
+
+\subsection{Experimental setting}
+\label{sec:exp-setting}
+
+\paragraph{Input and ground truth.}
+All experiments use the same input, the 126-page draft ISO/IEC DIS
+18013-5:2020, and the same ground truth, the three appendices of ISO/IEC TS
+18013-6:2025, parsed by rule into structured test cases
+(Table~\ref{tab:ground-truth}). The 687 official cases that cite the standard
+refer to 54 distinct clauses of the published 2021 edition, whereas the input
+is the 2020 draft; this edition mismatch is a confound in every coverage
+figure below and is quantified in Section~\ref{sec:exp-conformance}.
+
+\begin{table}[t]
+  \centering
+  \caption{Ground truth: official test cases of ISO/IEC TS 18013-6:2025.}
+  \label{tab:ground-truth}
+  \begin{tabular}{lrr}
+    \toprule
+    Appendix & Test cases & Citing an 18013-5 clause \\
+    \midrule
+    1 -- Common and certificates & 138 & 14 \\
+    2 -- mDL                     & 460 & 451 \\
+    3 -- mDL reader              & 309 & 222 \\
+    \midrule
+    Total                        & 907 & 687 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Metrics.}
+\emph{Judge coverage} is the share of official cases for which an LLM judge,
+shown the five generated cases closest to the official one, finds at least one
+that verifies the same check (same data item or behaviour, same condition,
+same expected outcome). \emph{Structural match} uses no model: each official
+case is reduced by rule to a pair (data item, check type), and it is matched
+when the generated plan carries a coverage item whose source object is named
+by that data item and whose check belongs to the same family; 747 of the 907
+official cases can be reduced to such a pair and are called \emph{scorable}.
+\emph{Precision} is judged on a fixed random sample of 60 generated cases
+against three criteria: the case is \emph{grounded} in its requirement,
+\emph{actionable} by a test engineer, and its expected result is
+\emph{correct}. The judge belongs to the same model family as the generator,
+which is a known self-preference risk; the structural matcher was introduced
+to remove it from the headline figure.
+
+% ---------------------------------------------------------------------------
+\subsection{Method 1: RAG pipeline}
+\label{sec:exp-rag}
+
+\paragraph{Method.}
+The first method is an agentic retrieval-augmented pipeline organised in
+three stages. Axis~A extracts the PDF, splits it with a structure-aware
+two-pass chunker and indexes the chunks for hybrid dense and sparse retrieval
+fused by reciprocal rank. Axis~B runs a Planner and then a chain of three
+agents (Analyst, RAG Router, Designer) once per normative chunk, with
+schema-constrained generation, an error-reflective retry and a BERTScore
+self-evaluation gate, and assembles the output as an ISO/IEC/IEEE 29119-3
+test plan. Axis~C audits each generated case with structural guardrails, an
+embedding-distance pre-audit and an Auditor agent whose verdict is overridden
+by a deterministic rule. The pipeline was developed with \texttt{llama3.2};
+the full run reported here uses \texttt{gemma4:31b} for every agent, served
+locally with a context of 4096 tokens.
+
+\paragraph{Results: intermediate artefacts.}
+The first documented runs produced chunks and an index but no test plan
+(Table~\ref{tab:agentic-baseline}). The measurements of
+Table~\ref{tab:diagnosis} show that a single defect, a heading detector that
+matched object identifiers in the annexes instead of clause numbers, silently
+disabled the chunking, cross-reference, defined-term and planning mechanisms.
+A comparison of extraction back-ends (Table~\ref{tab:backends}) located the
+cause in the extraction layer.
+
+\paragraph{Results: the full run.}
+One full run of the three axes was then made with the heading defect still
+present (Table~\ref{tab:agentic-run}). Axis~B wrote a test case for 337 of
+the 472 normative chunks (71.4\,\%); the other 135 were dropped because an
+agent did not return valid JSON within its retries, the RAG Router alone
+accounting for 102 of them. The loss does not depend on the strength of the
+requirement (72\,\% of the chunks with a \emph{shall}, 69\,\% with a
+\emph{should}, 71\,\% with a \emph{may}) but on the place in the document: it
+is highest on the certificate-profile tables. Axis~C passed 154 of the 337
+cases (45.7\,\%). Its hallucination and omission rates miss their targets and
+its contradiction rate meets it (Table~\ref{tab:agentic-pending}). These rates
+are an optimistic estimate: the Auditor is the model that wrote the cases, and
+the six cases it failed to audit are counted as free of findings. The schema
+check found no violation, and the embedding-distance pre-audit flagged no
+case, its score being the same for passed and failed cases (0.84).
+
+The heading defect is visible in the plan. The 1,246 chunks carry 27 distinct
+section labels, so the 337 cases share 97 identifiers, 127 of them a single
+one, the five feature sets have no meaningful name, and a case can only be
+traced to its chunk, not to a clause. For that reason coverage is reported
+per normative chunk and not per section, and the run has not been scored
+against the official suite: both the judge and the structural matcher need a
+clause or a named object on the generated side. The cases are also short,
+261 of 337 having exactly two steps.
+
+\begin{table}[t]
+  \centering
+  \caption{RAG pipeline: full run on ISO/IEC DIS 18013-5
+    (\texttt{gemma4:31b}).}
+  \label{tab:agentic-run}
+  \begin{tabular}{lr}
+    \toprule
+    Measure & Value \\
+    \midrule
+    Chunks indexed (Axis A)                 & 1,246 \\
+    \quad normative                         & 472 \\
+    Distinct section labels                 & 27 \\
+    \midrule
+    Test cases generated (Axis B)           & 337 / 472 = 71.4\,\% \\
+    \quad \emph{shall} / \emph{should} / \emph{may} & 248 / 61 / 28 \\
+    Chunks dropped                          & 135 \\
+    \quad RAG Router / Designer / Analyst   & 102 / 31 / 2 \\
+    Distinct test case identifiers          & 97 \\
+    Steps per case, mean                    & 2.3 \\
+    \midrule
+    Audit verdict (Axis C): pass            & 154 = 45.7\,\% \\
+    \quad warning                           & 96 = 28.5\,\% \\
+    \quad fail                              & 87 = 25.8\,\% \\
+    Cases the Auditor could not audit       & 6 \\
+    Structural violations                   & 0 \\
+    \midrule
+    Time: Axis A / B / C                    & 37\,s / 35.1\,h / 6.3\,h \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{RAG pipeline: state of the documented runs.}
+  \label{tab:agentic-baseline}
+  \begin{tabular}{lr}
+    \toprule
+    Measure & Value \\
+    \midrule
+    Chunks produced (three successive runs) & 843 / 1,175 / 1,202 \\
+    Normative chunks in the indexed run     & 466 \\
+    Unit tests (all external calls mocked)  & 23 \\
+    Test plans produced by these runs       & 0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{RAG pipeline: measured diagnosis on the 1,202-chunk run.}
+  \label{tab:diagnosis}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lrl}
+    \toprule
+    Measurement & Value & Consequence \\
+    \midrule
+    Distinct section labels                  & 25          & about 200 expected \\
+    Chunks labelled with one ASN.1 OID       & 645 (54\,\%) & headings matched on OIDs \\
+    Chunks labelled \texttt{8.1.2.2}         & 327 (27\,\%) & no heading for 40 pages \\
+    Normative chunks holding a full clause  & 1 / 466     & chunking inactive \\
+    Chunks with defined terms                & 0 / 1,202   & term injection inactive \\
+    Cross-references resolved                & 22, all to OIDs & resolution inactive \\
+    Planner clusters                         & 5           & feature sets meaningless \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{RAG pipeline: extraction back-ends on ISO/IEC DIS 18013-5.}
+  \label{tab:backends}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llllr}
+    \toprule
+    Back-end & Headings recovered & Ligatures & Font data & Time \\
+    \midrule
+    pdfplumber & 0.89 recall & broken & no  & 60\,s \\
+    MarkItDown & none                         & broken & no  & 47\,s \\
+    PyMuPDF    & 47 / 47 bookmarks     & intact & yes & 5\,s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{RAG pipeline: planned evaluation. Coverage is per normative
+    chunk, the section labels being unreliable; the Axis~C rates are over the
+    337 generated cases.}
+  \label{tab:agentic-pending}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llrr}
+    \toprule
+    Axis & Metric & Target & Result \\
+    \midrule
+    A & Retrieval precision@5           &             & \tbd \\
+    A & Retrieval recall@5              &             & \tbd \\
+    A & Retrieval F1@5                  &             & \tbd \\
+    \midrule
+    B & Test cases generated            &             & 337 \\
+    B & Normative chunks covered        & $\geq 80\,\%$ & 71.4\,\% \\
+    B & Human score (5 criteria, 1--5)  & $\geq 3.5$    & \tbd \\
+    \midrule
+    C & Hallucination rate              & $< 10\,\%$    & 23.4\,\% \\
+    C & Contradiction rate              & $< 5\,\%$     & 4.7\,\% \\
+    C & Omission rate                   & $< 20\,\%$    & 43.3\,\% \\
+    C & Adversarial detection rate      & $\geq 80\,\%$ & \tbd \\
+    C & Auditor--human agreement (Cohen's $\kappa$) &   & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Method 2: deterministic pipeline}
+\label{sec:exp-deterministic}
+
+The second method is a fixed pipeline with no embeddings, no retrieval and no
+agent framework: the control flow is written in code, the language model is
+called only to extract and to write, and every reply is checked by rule.
+Whatever fails a check is recorded as an explicit gap instead of being
+emitted. Three successive versions of this pipeline were evaluated; they are
+reported separately because each changes what the generator enumerates.
+
+\subsubsection{Version 1: sentence-level generation}
+\label{sec:exp-sentence}
+
+\paragraph{Method.}
+A rule-based ingest segments the document into clauses from its layout;
+candidate normative sentences are selected by rule and one LLM call per clause
+extracts requirements, each accepted only if its quote is verbatim and its
+modality matches; one LLM call per requirement then writes a
+nominal case and its negative and boundary variants, checked by a rule-based
+verifier with a bounded retry. The model is \texttt{gemma4:31b}.
+
+\paragraph{Results.}
+Table~\ref{tab:sentence} gives the scores against the official suite.
+Coverage is
+4.2\,\%, and the three most-tested clauses score 3\,\%, 1\,\% and 0\,\%. The
+generated cases are nevertheless mostly valid, which places the problem in
+what is generated rather than in how it is written: the ingest recovered only
+117 clauses, and one case per prose sentence does not have the granularity of
+the official suite.
+
+\begin{table}[t]
+  \centering
+  \caption{Deterministic pipeline, version 1 (\texttt{gemma4:31b}).}
+  \label{tab:sentence}
+  \begin{tabular}{lr}
+    \toprule
+    Measure & Value \\
+    \midrule
+    Clauses ingested                 & 117 \\
+    Requirements extracted           & 215 \\
+    Test cases generated             & 428 \\
+    \quad nominal / negative / boundary & 215 / 186 / 27 \\
+    \midrule
+    Judge coverage, all citing cases & 29 / 687 = 4.2\,\% \\
+    \quad Appendix 1                 & 3 / 14 \\
+    \quad Appendix 2 (mDL)           & 16 / 451 \\
+    \quad Appendix 3 (mDL reader)    & 10 / 222 \\
+    \midrule
+    Precision: grounded              & 52 / 60 \\
+    Precision: actionable            & 50 / 60 \\
+    Precision: expected result correct & 51 / 60 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Version 2: explicit test model and coverage items}
+\label{sec:exp-testmodel}
+
+\paragraph{Method.}
+The official suite is an enumeration of objects against a fixed ladder of
+checks, so an explicit test model was inserted between extraction and
+generation. A second LLM stage extracts the objects the standard defines
+(kind, presence, type, value domain, size, relations, each with a verbatim
+quote); a deterministic stage derives coverage items from requirements and
+objects by equivalence partitioning and boundary analysis; and one LLM call
+per coverage item writes the test case, the kind of case being set by the tool
+and never by the model. The ingest was extended to keep table rows as records,
+and extraction accepts drafts individually instead of rejecting a whole batch.
+The model is unchanged.
+
+\paragraph{Results.}
+Table~\ref{tab:testmodel} compares this run with version~1 on the same
+model. Coverage of the official suite rises from 4.2\,\% to 13.8\,\%, the
+best clause reaching 25.4\,\%, and 99.2\,\% of the coverage items produce a
+case. Actionability does not move and becomes the quality ceiling. The
+remaining limit is measured: twelve of the sixteen object-extraction failures
+are truncated replies on the largest table clauses, which hold 361 table rows
+and yielded 4 objects.
+
+\begin{table}[t]
+  \centering
+  \caption{Deterministic pipeline, version 2 against version 1, same model
+    (\texttt{gemma4:31b}).}
+  \label{tab:testmodel}
+  \begin{tabular}{lrr}
+    \toprule
+    Measure & Version 1 & Version 2 \\
+    \midrule
+    Clauses ingested            & 117 & 265 \\
+    Requirements                & 215 & 842 \\
+    Objects in the test model   & --  & 921 \\
+    Coverage items              & --  & 3,257 \\
+    Test cases                  & 428 & 3,231 \\
+    Gaps                        & 14  & 66 \\
+    \midrule
+    Judge coverage              & 29 / 687 = 4.2\,\% & 95 / 687 = 13.8\,\% \\
+    \quad Appendix 1            & 3 / 14   & 3 / 14 \\
+    \quad Appendix 2 (mDL)      & 16 / 451 & 69 / 451 \\
+    \quad Appendix 3 (mDL reader) & 10 / 222 & 23 / 222 \\
+    \midrule
+    Precision: grounded         & 52 / 60 & 56 / 60 \\
+    Precision: actionable       & 50 / 60 & 50 / 60 \\
+    Precision: expected result correct & 51 / 60 & 54 / 60 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsubsection{Version 3: conformance-testing methodology}
+\label{sec:exp-conformance}
+
+\paragraph{Method.}
+The third version adopts the methodology of the conformance-testing
+standards the official suite follows (ISO/IEC 9646-2, ITU-T X.291). Four
+elements are added to the pipeline. A deterministic grammar stage harvests
+objects from formal declarations (CDDL, ABNF, JSON Schema, ASN.1). An
+Implementation Conformance Statement (ICS) proforma is derived, with one item
+per declared feature and a status of mandatory, optional or conditional, and
+one \emph{capability} coverage item is emitted per mandatory or optional
+item. Coverage items are organised in the four test groups of X.291
+(capability, valid, invalid and inopportune behaviour), with the invalid side
+of the ladder emitted for every object. Generation is batched per source. The
+evaluation is rebuilt at the same time, with the judge-free structural matcher
+and three explicit denominators. The full run of this version was made with
+\texttt{qwen3.8:27b}, not with the model of version~2, so every
+model-dependent figure below carries a change of model as well as a change of
+method.
+
+\paragraph{Results: the deterministic stages.}
+The grammar, ICS and derivation stages use no model, so their output is
+exactly reproducible from the input alone (Table~\ref{tab:deterministic}).
+About a third of the 94 objects first harvested were malformed; the 152
+harvested at the end are all well formed. The
+share of due ICS items that carry a coverage item is 100\,\% by construction;
+it is a soundness invariant of the derivation, not a score, and the
+informative figure is the number of ICS items found.
+
+\begin{table}[t]
+  \centering
+  \caption{Version 3: deterministic stages alone, no model, on ISO/IEC DIS
+    18013-5 (265 clauses).}
+  \label{tab:deterministic}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lrr}
+    \toprule
+    Measure & Start of development & End of development \\
+    \midrule
+    Objects harvested from formal notation & 94 & 152 \\
+    ICS items                              & --   & 75 \\
+    Coverage items                         & 250  & 604 \\
+    \quad after deflation                  & --   & 596 \\
+    Invalid-side coverage items            & 0    & 198 \\
+    Test groups represented                & 2 of 4 & 4 of 4 \\
+    \quad capability / valid / invalid     & --   & 75 / 331 / 190 \\
+    Due ICS items with a coverage item     & --   & 75 / 75 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Results: the full run.}
+Table~\ref{tab:conformance-run} compares the full run with version~2.
+Everything upstream of generation improved: the table clauses that had
+truncated are now read, the object count rises by a factor of 1.73, and the
+structural match on the comparable basis rises from 22.5\,\% to 34.9\,\%. The
+generation stage, however, returned no test case in this run, so judge
+coverage and precision are void, not low, and remain to be measured.
+
+\begin{table}[t]
+  \centering
+  \caption{Version 3 against version 2. The two runs use different
+    models. Groups: capability, valid, invalid and inopportune behaviour.
+    G / A / C: grounded, actionable and correct.}
+  \label{tab:conformance-run}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{lrr}
+    \toprule
+    Measure & Version 2 & Version 3 \\
+            & (\texttt{gemma4:31b}) & (\texttt{qwen3.8:27b}) \\
+    \midrule
+    Requirements                  & 842   & 810 \\
+    Objects                       & 921   & 1,590 \\
+    \quad of which from grammar   & --    & 152 \\
+    ICS items                     & --    & 1,989 \\
+    \quad mand. / opt. / cond. & -- & 1,438 / 394 / 157 \\
+    Coverage items                & 3,257 & 7,978 \\
+    \quad cap. / valid / invalid / inopp. & -- & 1,723 / 4,052 / 2,186 / 17 \\
+    Due ICS items with a coverage item & -- & 1,832 / 1,832 \\
+    \midrule
+    Structural match, objects only & 168 / 747 = 22.5\,\% & 261 / 747 = 34.9\,\% \\
+    Structural match, every source & 168 / 747 = 22.5\,\% & 276 / 747 = 36.9\,\% \\
+    \midrule
+    Test cases                    & 3,231 & 0 \\
+    Judge coverage                & 95 / 687 = 13.8\,\% & void \\
+    Precision (G / A / C, of 60) & 56 / 50 / 54 & void \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Results: denominators and macro averages.}
+The size of the official suite is not its scored size. Of the 907 official
+cases, 687 cite a clause of the standard under test, and only 250 cite a
+clause identifier that exists in the 2020 draft used as input.
+Table~\ref{tab:denominators} reports every rate against the three
+denominators, with the macro averages over clauses and over test families
+beside the per-case rate. On version~2, where both measures exist, the judge
+and the structural matcher agree on 73.4\,\% of the cases both can score
+(434 of 591).
+
+\begin{table}[t]
+  \centering
+  \caption{Coverage of the official suite against three denominators. Micro is
+    the per-case rate; macro is the mean of the per-clause or per-family
+    rates. In version~2 no requirement carries a name, so the structural
+    match is on named objects only.}
+  \label{tab:denominators}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llrrrr}
+    \toprule
+    Scope & Run and measure & Scored & Micro & Macro & Macro \\
+          &                 &        &       & clauses & families \\
+    \midrule
+    All official cases & V2, judge                      & 687 & 13.8\,\% & 17.0\,\% & 11.5\,\% \\
+    ($n = 907$)        & V2, structural                 & 747 & 22.5\,\% & 20.5\,\% & 17.5\,\% \\
+                       & V3, structural, objects only   & 747 & 34.9\,\% & 24.5\,\% & 39.0\,\% \\
+                       & V3, structural, every source   & 747 & 36.9\,\% & 28.6\,\% & 40.6\,\% \\
+    \midrule
+    Citing the standard & V2, judge                     & 687 & 13.8\,\% & 17.0\,\% & 11.5\,\% \\
+    ($n = 687$)        & V2, structural                 & 591 & 22.8\,\% & 20.5\,\% & 17.1\,\% \\
+                       & V3, structural, objects only   & 591 & 34.7\,\% & 24.2\,\% & 39.9\,\% \\
+                       & V3, structural, every source   & 591 & 36.7\,\% & 28.4\,\% & 40.9\,\% \\
+    \midrule
+    In-edition         & V2, judge                      & 250 & 16.8\,\% & 14.9\,\% & 23.3\,\% \\
+    ($n = 250$)        & V2, structural                 & 207 & 18.8\,\% & 10.0\,\% & 14.8\,\% \\
+                       & V3, structural, objects only   & 207 & 33.3\,\% & 20.9\,\% & 27.3\,\% \\
+                       & V3, structural, every source   & 207 & 35.7\,\% & 32.5\,\% & 33.9\,\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Results: by check family and by clause.}
+The gain is concentrated where the diagnosis of version~2 placed the limit
+(Tables~\ref{tab:families} and~\ref{tab:clauses}): the encoding, consistency
+and presence families, and the data-element clauses 7.2 and 7.2.1, which go
+together from 40 to 118 matched cases of 166. Behaviour, the largest family of
+the suite, stays at 16.4\,\%, size falls to zero, and clauses 9.2.2 and 9.3.2
+are not matched at all in either run. In total 145 official cases became
+matched and 37 stopped being matched.
+
+\begin{table}[t]
+  \centering
+  \caption{Structural match by check family, matched of scorable official
+    cases.}
+  \label{tab:families}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Family & \multicolumn{2}{c}{Version 2} & \multicolumn{2}{c}{Version 3} \\
+    \midrule
+    Encoding     & 35 / 117 & 29.9\,\% & 85 / 117 & 72.6\,\% \\
+    Consistency  & 7 / 31   & 22.6\,\% & 21 / 31  & 67.7\,\% \\
+    Presence     & 45 / 137 & 32.8\,\% & 69 / 137 & 50.4\,\% \\
+    Value domain & 56 / 165 & 33.9\,\% & 62 / 165 & 37.6\,\% \\
+    Behaviour    & 20 / 220 & 9.1\,\%  & 36 / 220 & 16.4\,\% \\
+    Reuse        & 2 / 24   & 8.3\,\%  & 3 / 24   & 12.5\,\% \\
+    Size         & 3 / 53   & 5.7\,\%  & 0 / 53   & 0.0\,\% \\
+    \midrule
+    All scorable & 168 / 747 & 22.5\,\% & 276 / 747 & 36.9\,\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Structural match on the twelve most-tested clauses (2021
+    numbering), matched of scorable official cases.}
+  \label{tab:clauses}
+  \begin{tabular}{lrr}
+    \toprule
+    Clause & Version 2 & Version 3 \\
+    \midrule
+    7.2.1       & 16 / 90 & 69 / 90 \\
+    7.2         & 24 / 76 & 49 / 76 \\
+    9.1.2.5     & 9 / 53  & 17 / 53 \\
+    9.1.2.4     & 27 / 82 & 30 / 82 \\
+    8.3.2.1.2.2 & 19 / 86 & 22 / 86 \\
+    8.2.1.1     & 12 / 49 & 15 / 49 \\
+    9.1.4       & 6 / 34  & 9 / 34 \\
+    8.3.2.1.2   & 5 / 27  & 6 / 27 \\
+    8.3.2.1.2.3 & 9 / 32  & 9 / 32 \\
+    9.1.1.4     & 13 / 54 & 8 / 54 \\
+    9.2.2       & 0 / 33  & 0 / 33 \\
+    9.3.2       & 0 / 30  & 0 / 30 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Method 3: agentic harness}
+\label{sec:exp-harness}
+
+% TODO: complete this subsection once the runs are done.
+\paragraph{Method.}
+% TODO: describe the protocol. Points to fix: the prompt given to the harness,
+% what it may read (the standard only, never TS 18013-6), the output format
+% (the same plan schema, so that the same evaluation scripts apply), the
+% models, and the judge model, which should be the same for every row.
+The third method gives the task to an industrial agentic coding harness,
+Claude Code, with no purpose-built pipeline around it. The harness receives
+the same input document and is asked to produce a test plan in the same
+format, which is then scored with the same evaluation as the deterministic
+pipeline. Two families of models are run through the harness: Anthropic
+models (\tbd) and open-source models (\tbd).
+
+\paragraph{Results.}
+Table~\ref{tab:harness} gives the results per model. \tbd
+
+\begin{table}[t]
+  \centering
+  \caption{Agentic harness: results per model (pending). Judge: judge
+    coverage; Struct.: structural match; G / A / C: grounded, actionable and
+    correct, of 60 sampled cases.}
+  \label{tab:harness}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llrrrrr}
+    \toprule
+    Harness & Model & Cases & Judge & Struct. & G / A / C & Time \\
+    \midrule
+    Claude Code & Anthropic, \tbd   & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    Claude Code & Anthropic, \tbd   & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    Claude Code & Open source, \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    Claude Code & Open source, \tbd & \tbd & \tbd & \tbd & \tbd & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Comparison of the three methods}
+\label{sec:exp-comparison}
+
+% TODO: write the comparison once the RAG and harness results are in.
+% Note: the structural match needs a plan that carries coverage items with a
+% named source object; decide how it applies to the RAG and harness outputs.
+Table~\ref{tab:comparison} places the three methods side by side on the
+metrics of Section~\ref{sec:exp-setting}. \tbd
+
+\begin{table}[t]
+  \centering
+  \caption{The three methods on ISO/IEC DIS 18013-5 (harness results and
+    the scoring of the RAG plan pending). Judge: judge coverage, of the 687 official cases citing the
+    standard; Struct.: structural match, of the 747 scorable official cases;
+    G / A / C: grounded, actionable and correct, of 60 sampled cases.}
+  \label{tab:comparison}
+  \small\setlength{\tabcolsep}{4pt}
+  \begin{tabular}{llrrrrr}
+    \toprule
+    Method & Model & Cases & Judge & Struct. & G / A / C & Time \\
+    \midrule
+    1. RAG pipeline       & \texttt{gemma4:31b}  & 337   & \tbd     & \tbd     & \tbd         & 41.4\,h \\
+    \midrule
+    2. Deterministic, v1  & \texttt{gemma4:31b}  & 428   & 4.2\,\%  & --       & 52 / 50 / 51 & 0.75\,h \\
+    2. Deterministic, v2  & \texttt{gemma4:31b}  & 3,231 & 13.8\,\% & 22.5\,\% & 56 / 50 / 54 & 12.7\,h \\
+    2. Deterministic, v3  & \texttt{qwen3.8:27b} & 0     & void     & 36.9\,\% & void         & 126.1\,h \\
+    \midrule
+    3. Harness            & Anthropic, \tbd      & \tbd  & \tbd     & \tbd     & \tbd         & \tbd \\
+    3. Harness            & Open source, \tbd    & \tbd  & \tbd     & \tbd     & \tbd         & \tbd \\
+    \bottomrule
+  \end{tabular}
+\end{table}

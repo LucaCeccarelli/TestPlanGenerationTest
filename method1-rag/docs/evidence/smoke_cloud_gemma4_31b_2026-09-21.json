@@ -1,0 +1,143 @@
+[
+ {
+  "chunk_id": "iso_iec_18013_5_0200",
+  "model": "gemma4:31b",
+  "source": "For mDL Central Client Mode the mDL Reader shall advertise a 16 byte UUID individual to the reader if it is\n     transferred during Device Engagement from the mDL to the mDL Reader, otherwise the mDL Reader shall\n     advertise the BT SIG registered UUID for the mDL Reader. The mDL shall scan for the applicable UUID.",
+  "analyst": {
+   "requirement_summary": "The mDL Reader must advertise either a unique 16-byte UUID (if transferred during Device Engagement) or the BT SIG registered UUID, and the mDL must scan for the corresponding UUID.",
+   "testable_assertion": "The mDL Reader advertises a 16-byte individual UUID when transferred during Device Engagement, or the BT SIG registered UUID otherwise, and the mDL successfully scans for the advertised UUID.",
+   "preconditions": [
+    "The system is operating in mDL Central Client Mode"
+   ],
+   "related_sections": [],
+   "requirement_type": "SHALL",
+   "chunk_id": "iso_iec_18013_5_0200",
+   "section": "8.1.2.2"
+  },
+  "t_analyst": 1.7,
+  "router": {
+   "supporting_clauses": [
+    "For mDL Central Client Mode the mDL Reader shall advertise a 16 byte UUID individual to the reader if it is transferred during Device Engagement from the mDL to the mDL Reader, otherwise the mDL Reader shall advertise the BT SIG registered UUID for the mDL Reader. The mDL shall scan for the applicable UUID. [iso_iec_18013_5_0200]",
+    "Currently no BT SIG registered UUID is available, but it is expected to be available in the future. Until that time the following UUID shall be used: 5c8256b5-225f-45e6-a102-f9307a4d30c4. [iso_iec_18013_5_0201]",
+    "UUID\u2019s transferred shall be encoded using variant 1 (RFC 4122) [iso_iec_18013_5_0208]",
+    "If mDL central client mode is used and the BT SIG UUID is used, the mDL shall read the ident characteristic to confirm the correct BLE peripheral by varifying the value in the Ident characteristic. [iso_iec_18013_5_0216]"
+   ],
+   "cross_norm_refs": [
+    "BT SIG registered UUID",
+    "RFC 4122 (UUID variant 1)"
+   ],
+   "definitions": {
+    "mDL Central Client Mode": "A mode where the mDL acts as a BLE central (scanning) and GATT client, and the mDL Reader acts as a BLE peripheral (advertising) and GATT server. [iso_iec_18013_5_0195, iso_iec_18013_5_0209]",
+    "Device Engagement": "The initial phase where the mDL and mDL Reader exchange basic information (such as ephemeral keys and transmission technology preferences) to establish a connection. [iso_iec_18013_5_0291]"
+   },
+   "test_method_hints": "Verification can be performed by: 1. Capturing BLE advertisement packets from the mDL Reader in both scenarios (with and without UUID transfer during Device Engagement) to verify the advertised UUID (either the unique 16-byte UUID or 5c8256b5-225f-45e6-a102-f9307a4d30c4). 2. Using a BLE sniffer to confirm the mDL scans for the specific UUID advertised by the reader. 3. If the BT SIG UUID is used, verifying that the mDL subsequently reads the 'Ident' characteristic (UUID 00000008-A123-48CE-896B-4C76973373E6) to confirm the reader's identity. [iso_iec_18013_5_0200, iso_iec_18013_5_0201, iso_iec_18013_5_0211, iso_iec_18013_5_0216]",
+   "full_context_summary": "In mDL Central Client Mode, the mDL Reader acts as the BLE advertiser. It must advertise a unique 16-byte UUID if one was exchanged during the Device Engagement phase; otherwise, it must use the BT SIG registered UUID (currently defined as 5c8256b5-225f-45e6-a102-f9307a4d30c4). The mDL is responsible for scanning for this specific UUID. Because the BT SIG UUID is non-unique across different readers, the norm requires the mDL to further verify the reader's identity by reading the 'Ident' characteristic after the connection is established."
+  },
+  "t_router": 6.4,
+  "test_case": {
+   "tc_id": "TC-18013-5-8.1.2.2-01",
+   "objective": "Verify that the mDL Reader advertises the correct UUID (Individual vs BT SIG) in Central Client Mode and the mDL scans for it.",
+   "priority": "High",
+   "traceability": "iso_iec_18013_5_0200 (section 8.1.2.2)",
+   "preconditions": [
+    "The system is operating in mDL Central Client Mode",
+    "A BLE sniffer is active and capturing traffic between the mDL and mDL Reader",
+    "The mDL Reader is configured to support both individual and BT SIG UUID advertising"
+   ],
+   "inputs": [
+    {
+     "input_number": 1,
+     "action": "Initiate Device Engagement where the mDL transfers a unique 16-byte UUID to the mDL Reader, then trigger the mDL Reader to start advertising.",
+     "expected_result": "The mDL Reader advertises the specific 16-byte individual UUID transferred during Device Engagement; the mDL scans for and identifies this specific UUID."
+    },
+    {
+     "input_number": 2,
+     "action": "Initiate Device Engagement without transferring a unique 16-byte UUID to the mDL Reader, then trigger the mDL Reader to start advertising.",
+     "expected_result": "The mDL Reader advertises the BT SIG registered UUID (5c8256b5-225f-45e6-a102-f9307a4d30c4); the mDL scans for and identifies this UUID."
+    }
+   ],
+   "actual_results": "",
+   "requirement_type": "SHALL",
+   "coverage_item_id": "iso_iec_18013_5_0200",
+   "feature_set": "BLE Connectivity",
+   "notes": "Verification of the BT SIG UUID scenario should be followed by a check of the 'Ident' characteristic as per section 8.1.2.2 / iso_iec_18013_5_0216."
+  },
+  "t_designer": 10.6,
+  "t_total": 18.8
+ },
+ {
+  "chunk_id": "iso_iec_18013_5_0298",
+  "model": "gemma4:31b",
+  "source": "\u2014  The key derivation shall use HKDF instantiated with SHA-256 as defined in RFC 5869. The info\n             parameter shall be empty, the output key length is 256 bits. Two keys shall be derived, SKReader\n             shall be derived using a salt of 0x00, SKDevice shall be derived using a salt of 0x01.\n          \u2014  For encryption AES-256-GCM (GCM: Galois Counter Mode) shall be used. The mDL Reader shall",
+  "analyst": {
+   "requirement_summary": "The system shall derive two 256-bit keys (SKReader and SKDevice) using HKDF with SHA-256 and RFC 5869, and use AES-256-GCM for encryption.",
+   "testable_assertion": "The SKReader key is derived using HKDF-SHA-256 with an empty info parameter and a salt of 0x00, the SKDevice key is derived using HKDF-SHA-256 with an empty info parameter and a salt of 0x01, both keys are 256 bits long, and encryption is performed using AES-256-GCM.",
+   "preconditions": [
+    "HKDF as defined in RFC 5869 is available",
+    "SHA-256 hash function is available",
+    "AES-256-GCM encryption algorithm is available"
+   ],
+   "related_sections": [
+    "RFC 5869"
+   ],
+   "requirement_type": "SHALL",
+   "chunk_id": "iso_iec_18013_5_0298",
+   "section": "8.1.2.2"
+  },
+  "t_analyst": 1.6,
+  "router": {
+   "supporting_clauses": [
+    "The key derivation shall use HKDF instantiated with SHA-256 as defined in RFC 5869. The info parameter shall be empty, the output key length is 256 bits. Two keys shall be derived, SKReader shall be derived using a salt of 0x00, SKDevice shall be derived using a salt of 0x01. [iso_iec_18013_5_0298]",
+    "For encryption AES-256-GCM (GCM: Galois Counter Mode) shall be used. [iso_iec_18013_5_0298]",
+    "The mDL Reader encrypts the first mDL Reader Request with SKReader and sends it to the mDL. [iso_iec_18013_5_0292]",
+    "The mDL replies with the mDL Response encrypted with SKDevice. [iso_iec_18013_5_0293]",
+    "The nonce used for encryption shall be built up according to the following structure: identifier | counter. The identifier is an 8 byte value. The mDL Reader shall use the following identifier: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x00. The mDL shall use the following identifier: 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x01. [iso_iec_18013_5_0299]",
+    "For the encryption, the IV is the nonce value and the AAD is an empty string. The format of the encrypted message is the ciphertext, followed by 16 bytes of the tag. [iso_iec_18013_5_0301]"
+   ],
+   "cross_norm_refs": [
+    "RFC 5869 (HKDF)",
+    "NIST SP 800-38D (AES-GCM)",
+    "BSI TR-03111 (ECKA-DH)"
+   ],
+   "definitions": {
+    "SKReader": "Session key used by the mDL Reader to encrypt messages sent to the mDL.",
+    "SKDevice": "Session key used by the mDL to encrypt messages sent to the mDL Reader.",
+    "HKDF": "HMAC-based Extract-and-Expand Key Derivation Function."
+   },
+   "test_method_hints": "Verification can be performed by implementing a reference HKDF-SHA-256 function with the specified salts (0x00 for SKReader, 0x01 for SKDevice) and empty info string, then comparing the resulting 256-bit keys against the system's derived keys. Encryption can be verified by checking that the AES-256-GCM ciphertext is followed by a 16-byte tag and that the IV is constructed as an 8-byte identifier (0x00...00 for Reader, 0x00...01 for Device) concatenated with a 4-byte big-endian counter starting at 1.",
+   "full_context_summary": "The requirement specifies the session encryption mechanism for offline mDL retrieval. It mandates the use of HKDF-SHA-256 (RFC 5869) to derive two distinct 256-bit session keys: SKReader (salt 0x00) and SKDevice (salt 0x01), both using an empty info parameter. These keys are used with AES-256-GCM for authenticated encryption. The protocol defines a specific nonce structure (8-byte identifier + 4-byte big-endian counter) where the identifier distinguishes the sender (0x00...00 for Reader, 0x00...01 for Device), and specifies that AAD must be an empty string and the output must include a 16-byte authentication tag."
+  },
+  "t_router": 5.9,
+  "test_case": {
+   "tc_id": "TC-18013-5-8.1.2.2-01",
+   "objective": "Verify the derivation of SKReader and SKDevice session keys using HKDF-SHA-256 and the subsequent use of AES-256-GCM for encryption.",
+   "priority": "High",
+   "traceability": "iso_iec_18013_5_0298 (section 8.1.2.2)",
+   "preconditions": [
+    "HKDF as defined in RFC 5869 is available",
+    "SHA-256 hash function is available",
+    "AES-256-GCM encryption algorithm is available",
+    "A shared secret (IKM) has been established between the mDL Reader and the mDL"
+   ],
+   "inputs": [
+    {
+     "input_number": 1,
+     "action": "Trigger the session key derivation process using the established shared secret, an empty info parameter, and salts 0x00 (for SKReader) and 0x01 (for SKDevice).",
+     "expected_result": "Two distinct 256-bit keys are generated; SKReader matches the output of HKDF-SHA-256(salt=0x00, info='') and SKDevice matches the output of HKDF-SHA-256(salt=0x01, info='')."
+    },
+    {
+     "input_number": 2,
+     "action": "Encrypt a test payload using the derived SKReader key with AES-256-GCM, using an empty AAD string and a nonce consisting of the 8-byte identifier 0x00...00 followed by a counter.",
+     "expected_result": "The resulting encrypted message consists of the ciphertext followed by a 16-byte authentication tag, and the encryption is successfully decryptable using the same parameters."
+    }
+   ],
+   "actual_results": "",
+   "requirement_type": "SHALL",
+   "coverage_item_id": "iso_iec_18013_5_0298",
+   "feature_set": "Security Mechanisms",
+   "notes": "Verification should be performed against a reference implementation of RFC 5869 and NIST SP 800-38D.; low-confidence \u2014 BERTScore F1=0.77 \u2014 manual review recommended"
+  },
+  "t_designer": 7.0,
+  "t_total": 14.5
+ }
+]

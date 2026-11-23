@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 try:  # Older / alternative deepagents releases that ship an Agent class.
     from deepagents import Agent  # type: ignore[attr-defined]
 except ImportError:
-    from deepagents import create_deep_agent
+    # Not create_deep_agent: it adds its own system prompt and eight built-in
+    # tools (about 26k characters) to every call, which overflows num_ctx=4096
+    # before the clause is even added. The plain agent sends only what we pass.
+    from langchain.agents import create_agent as create_deep_agent
 
     class Agent:  # type: ignore[no-redef]
         """Adapter exposing the AGENTS.md ``Agent`` interface over ``create_deep_agent``."""

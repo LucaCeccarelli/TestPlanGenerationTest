@@ -1,0 +1,125 @@
+{
+ "ISO": {
+  "pages": 126,
+  "toc_pages": [
+   3,
+   4
+  ],
+  "toc_entries": 47,
+  "current_regex": {
+   "found": 0,
+   "recall": 0.0,
+   "spurious": 0
+  },
+  "tolerant_on_layout": {
+   "found": 212,
+   "recall": 0.894,
+   "spurious": 170
+  },
+  "tolerant_on_plain": {
+   "found": 213,
+   "recall": 0.894,
+   "spurious": 171
+  },
+  "missing_sample": [
+   "7.3",
+   "7.3.3",
+   "7.4",
+   "9.2.3",
+   "9.2.4"
+  ],
+  "spurious_sample": [
+   "0",
+   "10",
+   "11",
+   "5.2",
+   "6.3.2.1",
+   "6.3.2.2",
+   "6.3.2.3",
+   "6.3.2.4",
+   "6.3.2.5",
+   "8.1.1.1",
+   "8.1.1.2",
+   "8.1.2.1"
+  ]
+ },
+ "RFC": {
+  "pages": 77,
+  "toc_pages": [
+   1,
+   2,
+   3
+  ],
+  "toc_entries": 4,
+  "current_regex": {
+   "found": 0,
+   "recall": 0.0,
+   "spurious": 0
+  },
+  "tolerant_on_layout": {
+   "found": 6,
+   "recall": 0.25,
+   "spurious": 5
+  },
+  "tolerant_on_plain": {
+   "found": 6,
+   "recall": 0.25,
+   "spurious": 5
+  },
+  "missing_sample": [
+   "1",
+   "2",
+   "3"
+  ],
+  "spurious_sample": [
+   "24",
+   "25",
+   "26",
+   "27",
+   "A"
+  ]
+ },
+ "OIDF": {
+  "pages": 96,
+  "toc_pages": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "toc_entries": 115,
+  "current_regex": {
+   "found": 0,
+   "recall": 0.0,
+   "spurious": 0
+  },
+  "tolerant_on_layout": {
+   "found": 162,
+   "recall": 0.983,
+   "spurious": 49
+  },
+  "tolerant_on_plain": {
+   "found": 162,
+   "recall": 0.983,
+   "spurious": 49
+  },
+  "missing_sample": [
+   "15.9.1",
+   "5.8"
+  ],
+  "spurious_sample": [
+   "6.1.1.1",
+   "6.1.1.2",
+   "6.1.1.3",
+   "A",
+   "A.3.2.1",
+   "A.3.2.2",
+   "B.1.3.1",
+   "B.1.3.1.1",
+   "B.1.3.1.2",
+   "B.1.3.1.3",
+   "B.1.3.1.4",
+   "B.1.3.1.5"
+  ]
+ }
+}
